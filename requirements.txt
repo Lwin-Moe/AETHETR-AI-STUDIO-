@@ -1,0 +1,10 @@
+streamlit
+google-genai
+edge-tts
+ffmpeg-python
+yt-dlp
+imageio-ffmpeg
+requests
+groq
+openai
+openai-whisper
