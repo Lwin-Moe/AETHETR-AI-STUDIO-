@@ -14,22 +14,8 @@ import openai
 
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import generate_whisper_sync_srt, parse_and_save_real_srt
+from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
-
-def tuples_to_srt(parsed_data):
-    """Whisper မှထွက်လာသော ဒေတာများကို Editor တွင်ပြင်နိုင်ရန် SRT String သို့ပြောင်းပေးသည့်စနစ်"""
-    srt_str = ""
-    for i, (start, end, text) in enumerate(parsed_data, 1):
-        # 🔴 SILENCE CLIP ENGINE: စကားမပြောတော့ဘဲ ငြိမ်နေချိန်တွင် စာတန်းထိုးပျောက်သွားစေရန် စာဖတ်နှုန်းဖြင့် ထိန်းချုပ်ခြင်း
-        natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-        end = min(start + natural_dur, end)
-        
-        def format_srt_time(seconds):
-            h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds % 1) * 1000)
-            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-        srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text.strip()}\n\n"
-    return srt_str.strip()
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -210,21 +196,60 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             except Exception as e: st.error(f"TTS Error: {e}"); st.stop()
 
         if subtitle_mode != "No Subtitle":
-            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (Audio Compressing...)"):
+            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                # 🔴 GROQ 25MB LIMIT FIX: အသံဖိုင်ကို MP3 အဖြစ် ချုံ့ပြီးမှ ပို့မည်
+                # 🔴 500 ERROR FIX: Groq 25MB Limit ကို ကျော်ဖြတ်ရန် အရည်အသွေးမကျစေဘဲ 32kbps MP3 အဖြစ် အလိုအလျောက်ချုံ့ခြင်း
                 sync_audio_path = "md_sync_compressed.mp3"
-                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "libmp3lame", "-ab", "64k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
+                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "libmp3lame", "-ab", "32k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
                 
-                groq_key_to_use = groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input
-                if groq_key_to_use:
-                    try:
-                        success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(sync_audio_path, st.session_state.md_generated_script, groq_key_to_use, sub_short)
-                        if success_sync: st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
-                        else: st.error(f"❌ Whisper Sync Error: {err_sync}"); st.stop()
-                    except Exception as e: st.error(f"Whisper Request Failed: {e}"); st.stop()
-                else: st.error("⚠️ Groq API Key မတွေ့ရှိပါ။")
+                # File Size စစ်ဆေးခြင်း (FFmpeg error တက်သွားပါက မူရင်းဖိုင်ကိုသာ ပြန်သုံးမည်)
+                if not os.path.exists(sync_audio_path) or os.path.getsize(sync_audio_path) < 100:
+                    sync_audio_path = a_generated
+
+                whisper_key = groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input
+                
+                try:
+                    raw_srt = ""
+                    # 🔴 DIRECT API CALL: ပြဿနာတက်သော External Library ကိုဖြုတ်၍ Groq/OpenAI ထံ တိုက်ရိုက်ချိတ်ဆက်ခြင်း
+                    if whisper_key.startswith("gsk_"):
+                        client_audio = Groq(api_key=whisper_key)
+                        with open(sync_audio_path, "rb") as f:
+                            transcription = client_audio.audio.transcriptions.create(
+                                file=(sync_audio_path, f.read()),
+                                model="whisper-large-v3",
+                                response_format="verbose_json"
+                            )
+                        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                    else:
+                        openai.api_key = whisper_key
+                        with open(sync_audio_path, "rb") as f:
+                            transcription = openai.audio.transcriptions.create(
+                                model="whisper-1", 
+                                file=f, 
+                                response_format="verbose_json"
+                            )
+                        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+
+                    # 🔴 SILENCE CLIP ENGINE: စကားမပြောဘဲ ငြိမ်နေချိန် စာတန်းထိုးပျောက်စေရန် ဤနေရာတွင် တစ်ပါတည်း တွက်ချက်သည်
+                    for i, segment in enumerate(segments, 1):
+                        start = segment['start'] if isinstance(segment, dict) else segment.start
+                        end = segment['end'] if isinstance(segment, dict) else segment.end
+                        text = segment['text'] if isinstance(segment, dict) else segment.text
+                        
+                        natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+                        end = min(start + natural_dur, end)
+                        
+                        def format_srt_time(seconds):
+                            h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds % 1) * 1000)
+                            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                        
+                        raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text.strip()}\n\n"
+                        
+                    st.session_state.md_generated_srt = raw_srt.strip()
+                except Exception as e:
+                    st.error(f"❌ Whisper API Error: {e}")
+                    st.stop()
         else: pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
 
         st.session_state.md_step1_done = True
@@ -247,7 +272,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 
         with col_r2:
             st.markdown("**👁️ 4-Axis Subtitle Blur Engine**")
-            # 🔴 TYPE-ERROR FIX: Variable များကို အမြဲကြိုတင်သတ်မှတ်ထားခြင်းဖြင့် Error ကို ရှောင်ရှားပါသည်
             blur_x, blur_y, blur_w, blur_h = 0, 0, 0, 0
             if md_blur and os.path.exists(st.session_state.md_preview_frame):
                 from PIL import Image, ImageFilter, ImageOps
@@ -258,10 +282,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         img_preview = img_raw
                     else:
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
-                        # 🔴 TYPE-ERROR FIX: Image.Resampling ကို ဖြုတ်ပြီး Default အတိုင်း ထားရှိသည်
                         img_preview = ImageOps.fit(img_raw, (int(v_w), int(v_h)))
                     
-                    # Safe Casting for sliders
                     v_w = int(max(20, v_w))
                     v_h = int(max(20, v_h))
                     
@@ -316,7 +338,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
                     if cb_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
                     
-                    # 🔴 SUPER STABLE BLUR ENGINE (delogo ကိုအသုံးပြု၍ multiple stream error ရှင်းလင်းခြင်း)
+                    # 🔴 SUPER STABLE BLUR ENGINE
                     if md_blur and blur_w > 0 and blur_h > 0:
                         ff_x, ff_y = int(max(0, min(blur_x, v_w - 1))), int(max(0, min(blur_y, v_h - 1)))
                         ff_w, ff_h = int(max(10, min(blur_w, v_w - ff_x))), int(max(10, min(blur_h, v_h - ff_y)))
