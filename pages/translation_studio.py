@@ -85,7 +85,6 @@ def sanitize_and_split_srt(raw_srt, max_chars=40, video_dur=600.0):
             natural_dur = max(1.5, min(3.2, len(chunk) * 0.11))
             
             c_start = start + (c_idx * standard_slice)
-            # အချိန်အလွတ်ကြီးများထဲအထိ စာတန်းထိုး ဆွဲမဆန့်သွားအောင် Cap ပေးခြင်း
             c_end = min(c_start + natural_dur, c_start + standard_slice)
             c_end = min(c_end, end)
             
@@ -250,7 +249,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             st.session_state.ts_viral_title = re.sub(r'[\[\]]', '', t_match.group(1)).strip() if t_match else "Viral Video"
             dirty_translated_srt = re.sub(r'\[TITLE:.*?\]', '', raw_translation, flags=re.IGNORECASE).strip()
             
-            # Sanitizer Engine ကို နှိုးပြီး အချိန်ကိုက် ညှိနှိုင်းဖြတ်တောက်ခြင်း
             st.session_state.ts_translated_srt = sanitize_and_split_srt(dirty_translated_srt, max_chars=42, video_dur=video_dur)
             
         except Exception as e: st.error(f"Translation Error: {e}"); st.stop()
@@ -331,7 +329,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                 st.image(st.session_state.ts_bg_image, caption="AI Generated Background")
 
         if st.button("🎬 RENDER MASTER VIDEO", type="primary"):
-            st.session_state.ts_run_id = str(int(time.time())) # Session State ထဲတွင် Rerun ခံနိုင်ရန် ထိန်းသိမ်းခြင်း
+            st.session_state.ts_run_id = str(int(time.time()))
             v_final = f"TRANSLATED_FINAL_{st.session_state.ts_run_id}.mp4"
             thumb_final = f"THUMB_FINAL_{st.session_state.ts_run_id}.jpg"
             st.session_state.final_video_path = v_final
@@ -366,19 +364,13 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     
-                    # 🔴 FFMEPG LOCALIZED SPLIT FILTER OVERLAY ENGINE (Fixed Outgoing Edges Bug)
+                    # 🔴 SUPER STABLE BLUR ENGINE (delogo ကိုအသုံးပြု၍ multiple stream error ရှင်းလင်းခြင်း)
                     if ts_blur and blur_w > 0 and blur_h > 0:
-                        ff_x = max(0, min(blur_x, v_w - 1))
-                        ff_y = max(0, min(blur_y, v_h - 1))
-                        ff_w = max(10, min(blur_w, v_w - ff_x))
-                        ff_h = max(10, min(blur_h, v_h - ff_y))
-                        
-                        split_video = video.split()
-                        main_bg = split_video[0]
-                        blur_target = split_video[1]
-                        
-                        blurred_stream = blur_target.filter('crop', w=ff_w, h=ff_h, x=ff_x, y=ff_y).filter('boxblur', luma_radius=25, luma_power=3)
-                        video = ffmpeg.overlay(main_bg, blurred_stream, x=ff_x, y=ff_y)
+                        ff_x = int(max(0, min(blur_x, v_w - 1)))
+                        ff_y = int(max(0, min(blur_y, v_h - 1)))
+                        ff_w = int(max(10, min(blur_w, v_w - ff_x)))
+                        ff_h = int(max(10, min(blur_h, v_h - ff_y)))
+                        video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
                     # Subtitles Rendering
                     if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
