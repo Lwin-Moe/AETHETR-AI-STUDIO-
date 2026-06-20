@@ -17,6 +17,83 @@ from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_f
 from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, VideoConfig, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
 
+def sanitize_and_split_srt(raw_srt, max_chars=40, video_dur=600.0):
+    """AI ထုတ်ပေးလိုက်သော SRT ဖိုင်အမှားများနှင့် စာတန်းအရှည်ကြီးများကို အလိုအလျောက် အချိုးကျ ပြုပြင်ဖြတ်တောက်ပေးမည့် စက်ယန္တရား"""
+    blocks = re.split(r'\n\s*\n', raw_srt.strip())
+    parsed_items = []
+    
+    def to_sec(t_str):
+        try:
+            h, m, s_ms = t_str.strip().split(':')
+            s, ms = s_ms.split(',')
+            return int(h)*3600 + int(m)*60 + int(s) + int(ms)/1000.0
+        except: return 0.0
+        
+    def to_srt_time(secs):
+        h, m = int(secs // 3600), int((secs % 3600) // 60)
+        s, ms = int(secs % 60), int((secs % 1) * 1000)
+        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+    # 1. ပထမဆင့်: စာသားနှင့် အချိန်များကို Clean ဖြစ်အောင် ဖတ်ယူခြင်း
+    for b in blocks:
+        lines = [l.strip() for l in b.split('\n') if l.strip()]
+        if len(lines) >= 3:
+            time_match = re.search(r'(\d+:\d+:\d+,\d+)\s*-->\s*(\d+:\d+:\d+,\d+)', lines[1])
+            if time_match:
+                start_s = to_sec(time_match.group(1))
+                end_s = to_sec(time_match.group(2))
+                txt = " ".join(lines[2:])
+                parsed_items.append({"start": start_s, "end": end_s, "text": txt})
+
+    # 2. ဒုတိယဆင့်: ခွဲခြမ်းစိတ်ဖြာပြီး အချိုးကျ ပြန်လည်ဖြတ်တောက်ခြင်း
+    new_counter = 1
+    sanitized_srt = ""
+    
+    for idx, item in enumerate(parsed_items):
+        start = item["start"]
+        end = item["end"]
+        text = item["text"]
+        
+        # 🔴 TIMESTAMP HALLUCINATION FIX: အချိန်အဆမတန် ခုန်တက်သွားပါက ပျမ်းမျှစာဖတ်နှုန်းဖြင့် ပြန်ညှိခြင်း
+        next_start = parsed_items[idx+1]["start"] if idx + 1 < len(parsed_items) else video_dur
+        if end > video_dur or (end - start) > 15.0 or end <= start:
+            estimated_dur = max(2.5, min(7.0, len(text) / 10.0))
+            end = min(start + estimated_dur, next_start - 0.05)
+            
+        # 🔴 SMART TEXT SPLITTER: စာပိုဒ်ရှည်ကြီးများကို ပုဒ်ဖြတ်ပုဒ်ရပ်ဖြင့် ခွဲထုတ်ခြင်း
+        sub_phrases = re.split(r'([။၊?!])', text)
+        chunks = []
+        current_chunk = ""
+        
+        for p in sub_phrases:
+            if not p: continue
+            if p in ["။", "၊", "?", "!"]:
+                current_chunk += p
+                chunks.append(current_chunk.strip())
+                current_chunk = ""
+            else:
+                if len(current_chunk) + len(p) > max_chars:
+                    if current_chunk.strip(): chunks.append(current_chunk.strip())
+                    current_chunk = p
+                else:
+                    current_chunk += p
+        if current_chunk.strip(): chunks.append(current_chunk.strip())
+        
+        chunks = [c for c in chunks if len(c.strip()) > 1]
+        if not chunks: chunks = [text]
+        
+        # 📐 အချိန်ကို စာကြောင်းရေအလိုက် အချိုးကျ (Proportionally) ခွဲဝေပေးခြင်း
+        total_dur = end - start
+        time_slice = total_dur / len(chunks)
+        
+        for c_idx, chunk in enumerate(chunks):
+            c_start = start + (c_idx * time_slice)
+            c_end = c_start + time_slice
+            sanitized_srt += f"{new_counter}\n{to_srt_time(c_start)} --> {to_srt_time(c_end)}\n{chunk}\n\n"
+            new_counter += 1
+            
+    return sanitized_srt.strip()
+
 def generate_hybrid_thumbnail(bg_image_path, output_path, title_text, font_path="Padauk.ttf"):
     try:
         wrapped_text = "\n".join(line.center(max(len(l) for l in textwrap.wrap(title_text, 25)), " ") for line in (textwrap.wrap(title_text, 25) or [title_text]))
@@ -101,15 +178,16 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         st.session_state.ts_step1_done = False
         pbar = st.progress(0, text="📥 ဗီဒီယို ပြင်ဆင်နေပါသည်...")
         v_input, a_out = "ts_input.mp4", "ts_audio.mp3"
-
+        
+        video_dur = 600.0
         try:
             if uploaded_file:
                 with open(v_input, "wb") as f: f.write(uploaded_file.read())
             else: download_video_from_url(video_url, v_input)
             extract_audio_fast(v_input, a_out)
+            video_dur = get_file_duration(v_input)
             
-            # Extract preview frame
-            ffmpeg.input(v_input, ss=min(get_file_duration(v_input)/2, 4)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+            ffmpeg.input(v_input, ss=min(video_dur/2, 4)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         except Exception as e: st.error(str(e)); st.stop()
 
         pbar.progress(30, text="📝 မူရင်းဘာသာစကားကို နားထောင်နေပါသည်...")
@@ -155,11 +233,12 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                 tone_instructions = "Translate accurately and directly."
 
             translation_prompt = f"""You are an expert Movie Localizer and Subtitle Translator. Translate the following SRT file into {target_lang}.
-            STRICT RULES: 
+            STRICT STRUCTURAL RULES: 
             1. Maintain the EXACT SRT timestamp format and numbering structure. Do not alter timelines.
             2. {tone_instructions}
-            3. Do NOT add any extra thoughts, translator notes, or side markdown text outside the pure SRT content.{dict_prompt}
-            4. At the absolute end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
+            3. Do NOT combine multiple small timestamp blocks into one single big paragraph! Keep them independent.
+            4. Do NOT add any extra thoughts, translator notes, or side markdown text outside the pure SRT content.{dict_prompt}
+            5. At the absolute end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
 
             raw_translation = ""
             if "Gemini" in ai_provider:
@@ -173,7 +252,12 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
             t_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_translation, re.IGNORECASE)
             st.session_state.ts_viral_title = re.sub(r'[\[\]]', '', t_match.group(1)).strip() if t_match else "Viral Video"
-            st.session_state.ts_translated_srt = re.sub(r'\[TITLE:.*?\]', '', raw_translation, flags=re.IGNORECASE).strip()
+            
+            dirty_translated_srt = re.sub(r'\[TITLE:.*?\]', '', raw_translation, flags=re.IGNORECASE).strip()
+            
+            # 🔴 ဖြတ်တောက်ပြင်ဆင်မည့် Engine အား မီးမောင်းထိုးနှိုးလိုက်ခြင်း
+            st.session_state.ts_translated_srt = sanitize_and_split_srt(dirty_translated_srt, max_chars=42, video_dur=video_dur)
+            
         except Exception as e: st.error(f"Translation Error: {e}"); st.stop()
 
         if gen_thumb:
@@ -205,8 +289,8 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         
         col_r1, col_r2 = st.columns(2)
         with col_r1:
-            st.markdown("**📝 Interactive SRT Editor**")
-            edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် တည်းဖြတ်နိုင်ပါသည်:", value=st.session_state.ts_translated_srt, height=450)
+            st.markdown("** 📝 Interactive SRT Editor (စနစ်တကျ ဖြတ်တောက်ပြီးသား စာတန်းထိုးများ)**")
+            edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ထပ်မံပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.ts_translated_srt, height=450)
             
         with col_r2:
             st.markdown("**👁️ 4-Axis Subtitle Blur Engine**")
@@ -222,8 +306,8 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         img_preview = ImageOps.fit(img_raw, (v_w, v_h), Image.Resampling.LANCZOS)
                     
-                    # 🎛️ Sliders ၄ ခုဖြင့် တရုတ်စာတန်းပေါ် နေရာကွက်တိချိန်ခြင်း
-                    blur_x = st.slider("↔️ Blur X Position (ဘယ်/ညာ ရွှေ့ရန်)", 0, v_w, 0)
+                    # Sliders ၄ ခုဖြင့် တရုတ်စာတန်းပေါ် နေရာကွက်တိချိန်ခြင်း
+                    blur_x = st.slider("↔️ Blur X Position (ဘယ်/ညာ ਰွှေ့ရန်)", 0, v_w, 0)
                     blur_y = st.slider("↕️ Blur Y Position (အထက်/အောက် ရွှေ့ရန်)", 0, v_h, int(v_h * 0.72))
                     blur_w = st.slider("📐 Blur Width (ဝါးမည့် အကွက်အကျယ်)", 10, v_w, v_w)
                     blur_h = st.slider("📏 Blur Height (ဝါးမည့် အကွက်အမြင့်)", 10, v_h, int(v_h * 0.12))
@@ -242,7 +326,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     st.error(f"Preview Frame Layout Draw Failure: {e}")
                     v_w, v_h = 720, 1280
             else:
-                blur_height = 0
+                blur_w, blur_h = 0, 0
                 v_w, v_h = 720, 1280
                 st.info("💡 Blur Subtitle Blocker ပိတ်ထားပါသည်။")
 
@@ -272,15 +356,14 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     audio = ffmpeg.input("ts_input.mp4").audio
                     video = ffmpeg.input("ts_input.mp4").video
                     
-                    # Meticulously fetch original dimensions to avoid variables missing error
+                    # Original Ratio Dimension Probing
                     if video_ratio == "Original":
                         try:
                             probe = ffmpeg.probe("ts_input.mp4")
                             v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
                             if v_stream:
                                 v_w, v_h = int(v_stream['width']), int(v_stream['height'])
-                            else:
-                                v_w, v_h = 1280, 720
+                            else: v_w, v_h = 1280, 720
                         except: v_w, v_h = 1280, 720
                     else:
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
@@ -290,7 +373,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     
-                    # 🔴 SPLIT FILTER FIX: Prevents "multiple outgoing edges" error
+                    # 🔴 SPLIT FILTER OVERLAY ENGINE (No More Outgoing Edges Bug)
                     if ts_blur and blur_w > 0 and blur_h > 0:
                         ff_x = max(0, min(blur_x, v_w - 1))
                         ff_y = max(0, min(blur_y, v_h - 1))
@@ -301,9 +384,10 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                         main_bg = split_video[0]
                         blur_target = split_video[1]
                         
-                        blurred_stream = blur_target.filter('crop', w=ff_w, h=ff_h, x=ff_x, y=ff_y).filter('boxblur', luma_radius=22, luma_power=2)
+                        blurred_stream = blur_target.filter('crop', w=ff_w, h=ff_h, x=ff_x, y=ff_y).filter('boxblur', luma_radius=25, luma_power=3)
                         video = ffmpeg.overlay(main_bg, blurred_stream, x=ff_x, y=ff_y)
 
+                    # Subtitles Rendering
                     if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = render_cfg.font_path.replace('\\', '/')
