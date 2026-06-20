@@ -137,7 +137,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         ts_blur = st.checkbox("⬛ Localized Subtitle Blur (မူရင်းစာတန်းကို ကွက်ပြီးဝါးမည်)", value=True)
         use_text_watermark = st.checkbox("✍ " + "Add Text Watermark", value=False)
         watermark_text = st.text_input("Watermark Text", "") if use_text_watermark else ""
-        uploaded_logo = st.file_uploader("🖼️ Add Logo Image (Top Right)", type=["png", "jpg"])
+        uploaded_logo = st.file_uploader("🖼️ Add Logo Image (Top Right)", type=["png", "jpg", "jpeg"])
 
         st.markdown("<b>📝 Subtitle Output Settings</b>", unsafe_allow_html=True)
         ts_font = st.selectbox("🔤 Font Style", available_fonts, index=0)
@@ -364,7 +364,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     
-                    # 🔴 SUPER STABLE BLUR ENGINE (delogo ကိုအသုံးပြု၍ multiple stream error ရှင်းလင်းခြင်း)
                     if ts_blur and blur_w > 0 and blur_h > 0:
                         ff_x = int(max(0, min(blur_x, v_w - 1)))
                         ff_y = int(max(0, min(blur_y, v_h - 1)))
@@ -372,7 +371,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                         ff_h = int(max(10, min(blur_h, v_h - ff_y)))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
-                    # Subtitles Rendering
                     if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = render_cfg.font_path.replace('\\', '/')
@@ -394,11 +392,20 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
                     if use_text_watermark and watermark_text:
                         video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
-                    if uploaded_logo and os.path.exists("ts_logo.png"):
+                    
+                    # 🔴 FIX: Missing 'video =' reassignment resolved here. Logo is properly overlayed and preserved.
+                    if uploaded_logo:
                         try:
-                            logo_input = ffmpeg.input(uploaded_logo).filter('scale', -1, 75)
+                            # Save uploaded logo to a temporary file
+                            logo_path = "temp_uploaded_logo.png"
+                            with open(logo_path, "wb") as f:
+                                f.write(uploaded_logo.getbuffer())
+                            
+                            # Filter and overlay logo onto the existing video stream
+                            logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
-                        except Exception: pass
+                        except Exception as e: 
+                            st.warning(f"Logo Overlay failed: {e}")
 
                     out = ffmpeg.output(video, audio, v_final, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=get_file_duration("ts_input.mp4"))
                     out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
@@ -411,7 +418,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                 except Exception as e:
                     st.error(f"Render Dynamic Processing Error: {e}")
 
-        # --- OUTPUT DASHBOARD (Fixed Run_ID UnboundLocalError) ---
+        # --- OUTPUT DASHBOARD ---
         if st.session_state.render_success:
             st.balloons()
             st.success("🎉 ဘာသာပြန် Video အောင်မြင်စွာ ထွက်လာပါပြီ!")
