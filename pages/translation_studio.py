@@ -233,26 +233,26 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     if ts_blur and blur_height > 0:
                         video = ffmpeg.filter(video, 'drawbox', x=0, y=f'ih-{blur_height}', w='iw', h=blur_height, color='black@0.9', thickness='fill')
 
-                    # Apply Subtitles
-        if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
-            wrap_width = 25 if "9:16" in render_cfg.ratio else 45
-            safe_font_path = render_cfg.font_path.replace('\\', '/')
+                    # 🔴 Apply Subtitles (INDENTATION FIXED)
+                    if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
+                        wrap_width = 25 if "9:16" in render_cfg.ratio else 45
+                        safe_font_path = render_cfg.font_path.replace('\\', '/')
 
-            for i, (start, end, text) in enumerate(parsed_timestamps):
-                wrapped_lines = textwrap.wrap(text, width=wrap_width)
-                if not wrapped_lines: wrapped_lines = [text]
-                max_len = max(len(line) for line in wrapped_lines)
-                centered_text = "\n".join(line.center(max_len, " ") for line in wrapped_lines)
+                        for i, (start, end, text) in enumerate(parsed_timestamps):
+                            wrapped_lines = textwrap.wrap(text, width=wrap_width)
+                            if not wrapped_lines: wrapped_lines = [text]
+                            max_len = max(len(line) for line in wrapped_lines)
+                            centered_text = "\n".join(line.center(max_len, " ") for line in wrapped_lines)
 
-                txt_filename = f"temp_sub_{i}.txt"
-                with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
+                            txt_filename = f"temp_sub_{i}.txt"
+                            with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
 
-                if "Center" in render_cfg.sub_position: y_expr = "(h-text_h)/2"
-                elif "Top" in render_cfg.sub_position: y_expr = "150"
-                else: y_expr = "h-text_h-100"
+                            if "Center" in render_cfg.sub_position: y_expr = "(h-text_h)/2"
+                            elif "Top" in render_cfg.sub_position: y_expr = "150"
+                            else: y_expr = "h-text_h-100"
 
-                c_str = "yellow" if "Yellow" in render_cfg.sub_color else ("green" if "Green" in render_cfg.sub_color else "white")
-                video = ffmpeg.filter(video, 'drawtext', textfile=txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=render_cfg.sub_size, bordercolor='black', borderw=2.5, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
+                            c_str = "yellow" if "Yellow" in render_cfg.sub_color else ("green" if "Green" in render_cfg.sub_color else "white")
+                            video = ffmpeg.filter(video, 'drawtext', textfile=txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=render_cfg.sub_size, bordercolor='black', borderw=2.5, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
 
                     out = ffmpeg.output(video, audio, v_final, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=23, t=get_file_duration("ts_input.mp4"))
                     out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
