@@ -13,6 +13,7 @@ def fmt_time(seconds):
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
 def strip_audio_tags_pro(text):
+    """ဇာတ်ညွှန်းထဲမှ အသံ Tag များနှင့် မလိုအပ်သော စာသားများကို ရှင်းလင်းမည်"""
     text = re.sub(r'\[.*?\]', '', text)
     text = re.sub(r'\{.*?\}', '', text)
     text = re.sub(r'SPEAKER[_ ]?\d+[:\s]*', '', text, flags=re.IGNORECASE)
@@ -22,6 +23,7 @@ def strip_audio_tags_pro(text):
     return re.sub(r'\s+', ' ', text).strip()
 
 def parse_and_save_real_srt(segments, output_file, use_fade=False):
+    """WhisperX မှရသော Segments များကို .srt ဖိုင်အဖြစ် တကယ့် Hard Drive တွင် သိမ်းဆည်းပေးမည်"""
     final_parsed = []
     full_speech = []
 
@@ -46,12 +48,14 @@ def parse_and_save_real_srt(segments, output_file, use_fade=False):
 # 🔴 STREAMLIT CACHE: Model ကို တစ်ကြိမ်သာ Load လုပ်ရန်
 @st.cache_resource(show_spinner=False)
 def load_whisperx_model():
-    """WhisperX Model ကို Memory တွင် အသေတင်ထားပေးမည့် Cache Function"""
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    compute_type = "float16" if device == "cuda" else "int8"
+    """Streamlit Cloud တွင် Memory (VRAM) မပြည့်စေရန် CPU နှင့် Base Model ကိုသာ အသေတင်ထားပေးမည့် Cache Function"""
+    # Streamlit Cloud က CPU ပဲရတဲ့အတွက် "cpu" နဲ့ "int8" ကို အသေသတ်မှတ်ပါမည်
+    device = "cpu"
+    compute_type = "int8"
     
-    print("🔄 Loading WhisperX Model into Cache...")
-    model = whisperx.load_model("large-v3", device, compute_type=compute_type, language="my")
+    print("🔄 Loading WhisperX Model (Base) into Cache for Streamlit Cloud...")
+    # 🔴 "large-v3" အစား RAM စားသက်သာသော "base" ဟု ပြောင်းထားသည်
+    model = whisperx.load_model("base", device, compute_type=compute_type, language="my") 
     return model, device
 
 def generate_whisper_sync_srt(audio_file_path, story_text, groq_api_key=None, sub_short=False):
@@ -74,7 +78,7 @@ def generate_whisper_sync_srt(audio_file_path, story_text, groq_api_key=None, su
         except Exception as align_err:
             print(f"⚠️ Alignment optimization skipped: {align_err}")
 
-        # 5. Hormozi Style Chunking
+        # 5. Hormozi Style Chunking (စာတန်းအတိုဖြတ်ခြင်း)
         if sub_short:
             short_segments = []
             for seg in segments:
@@ -95,11 +99,13 @@ def generate_whisper_sync_srt(audio_file_path, story_text, groq_api_key=None, su
         # 6. SRT သိမ်းဆည်းခြင်း
         fc_parsed, _ = parse_and_save_real_srt(segments, "subtitles.srt", use_fade=False)
         
-        # 🔴 CRITICAL: VRAM ရှင်းလင်းခြင်း 
+        # 🔴 CRITICAL: Memory ရှင်းလင်းခြင်း 
         # Streamlit တွင် နောက်တစ်ကြိမ် Render လုပ်ပါက Memory မပြည့်စေရန် Model_A ကိုသာ ဖျက်မည်။ Main Model ကို Cache တွင် ထားမည်။
         if 'model_a' in locals():
             del model_a
-        torch.cuda.empty_cache()
+            
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         if fc_parsed:
             return True, fc_parsed, None
