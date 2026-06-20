@@ -4,7 +4,10 @@ import time
 import asyncio
 import subprocess
 import shutil
+import random
 import re
+import textwrap
+import ffmpeg
 from google import genai
 from groq import Groq
 import openai
@@ -12,13 +15,13 @@ import openai
 # ခွဲထုတ်ထားသော စက်ယန္တရား (Engines) များကို လှမ်းခေါ်ခြင်း
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import parse_and_save_real_srt
-from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
+from core_engines.subtitle_sync import generate_whisper_sync_srt
+from core_engines.video_render import render_premium_saas_video, VideoConfig, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
 
-def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
+def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc):
     """Movie Dubbing Studio ၏ UI အပြည့်အစုံနှင့် Workflow ကို မောင်းနှင်မည့် Function"""
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
-    st.markdown("နိုင်ငံခြား ဇာတ်လမ်းတိုများကို မြန်မာလို အလိုအလျောက် ဘာသာပြန်ပြီး အသံထည့်ပါ။")
+    st.markdown("နိုင်ငံခြား ဇာတ်လမ်းတိုများကို မြန်မာလို အလိုအလျောက် ဘာသာပြန်ပြီး အသံထည့်ပါ။ (Whisper Sync Enabled)")
 
     available_fonts = get_available_fonts()
 
@@ -103,7 +106,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
             col_s1, col_s2 = st.columns(2)
             with col_s1:
                 sub_bg = st.checkbox("🔲 Background Box", value=True, key="md_sub_bg")
-                sub_short = st.checkbox("✂️ Short & Punchy (Hormozi)", key="md_sub_short")
+                sub_short = st.checkbox("✂️ Short & Punchy (Hormozi)", value=True, key="md_sub_short")
         else:
             st.info("💡 Burn into Video ရွေးထားမှ ချိန်ညှိနိုင်ပါမည်။")
             selected_font, sub_position, sub_color, sub_size, sub_thickness, sub_bg, sub_short = "Padauk.ttf", "Bottom", "Yellow", 28, 2.5, True, False
@@ -113,7 +116,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
     # 🚀 EXECUTION WORKFLOW
     if st.button("🚀 START ONE-CLICK WORKFLOW MONETIZE GENERATOR"):
         if not api_key_input:
-            st.error("⚠️ API Key လိုအပ်ပါသည်။")
+            st.error("⚠️ AI API Key လိုအပ်ပါသည်။")
+            return
+        if not groq_key_fc:
+            st.error("⚠️ Groq API Key လိုအပ်ပါသည်။ (Whisper Alignment အတွက်မဖြစ်မနေလိုပါသည်)")
             return
         elif not uploaded_file and not video_url:
             st.error("⚠️ ဗီဒီယိုဖိုင်သို့မဟုတ် Link ထည့်ပေးပါ။")
@@ -156,10 +162,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
 
                 extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
                 
-                hormozi_rule = ""
-                if sub_short:
-                    hormozi_rule = " [HORMOZI]: Split the subtitles into chunks of ONLY 1 to 4 words max per block. CRITICAL: DO NOT remove original timestamps."
-                
                 raw_output_text = ""
                 if "Gemini" in ai_provider:
                     keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
@@ -171,7 +173,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                             media_file = client.files.upload(file=target_file)
                             while "PROCESSING" in str(client.files.get(name=media_file.name).state): time.sleep(2)
                             
-                            gemini_prompt = f"Watch the provided video carefully. Invent a completely ORIGINAL, highly engaging storytelling recap in Burmese. Do NOT just translate. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output ONLY valid SRT format synced to the scenes.{extra_rules}{hormozi_rule}" if "Original" in recap_mode else f"Listen to the audio. Translate and adapt the text into highly engaging, natural spoken Burmese. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output ONLY valid SRT format matching original timestamps.{extra_rules}{hormozi_rule}"
+                            # 🔴 GOLDEN RULE UPDATE: No More SRT Timestamps Generation from Gemini
+                            gemini_prompt = f"Watch the provided video carefully. Invent a completely ORIGINAL, highly engaging storytelling recap in Burmese. Do NOT just translate. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output pure text narrative. {extra_rules}" if "Original" in recap_mode else f"Listen to the audio. Translate and adapt the text into highly engaging, natural spoken Burmese. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output pure text narrative. {extra_rules}"
                             
                             response = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, gemini_prompt])
                             raw_output_text = response.text.strip()
@@ -189,8 +192,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                         openai.api_key = api_key_input
                         with open(a_extracted, "rb") as file: tsrt = openai.audio.translations.create(model="whisper-1", file=file, response_format="srt")
 
-                    base_prompt = f"Translate and adapt the English SRT into engaging Burmese. Add audio tags. Output valid SRT format. {extra_rules}{hormozi_rule}"
-                    comp = client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else ("gpt-5.5-pro" if "5.5" in ai_provider else "gpt-4o"), messages=[{"role": "user", "content": f"{base_prompt} --- SRT --- {tsrt}"}])
+                    base_prompt = f"Translate and adapt the text into engaging Burmese. Add audio tags. Output pure text narrative. {extra_rules}"
+                    comp = client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else ("gpt-5.5-pro" if "5.5" in ai_provider else "gpt-4o"), messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
                     raw_output_text = comp.choices[0].message.content
 
                 title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
@@ -198,14 +201,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                 st.session_state.viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "Viral Movie Recap"
                 st.session_state.viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
 
-                clean_raw_srt = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
-                clean_raw_srt = re.sub(r'\[TAGS:.*?\]', '', clean_raw_srt, flags=re.IGNORECASE).strip()
-                marker = chr(96) * 3
-                clean_raw_srt = clean_raw_srt.replace(f"{marker}srt", "").replace(marker, "")
+                clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
+                clean_raw_text = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
+                st.session_state.generated_script = clean_raw_text
 
-                parsed_timestamps, speech_text = parse_and_save_real_srt(clean_raw_srt, srt_final, use_fade=False)
-                st.session_state.generated_script = clean_raw_srt
-
+                # Thumbnail generation block
                 try:
                     t_A = min(get_file_duration(v_input)*0.2, 10)
                     t_B = min(get_file_duration(v_input)*0.5, 20)
@@ -229,12 +229,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                 st.error(f"Logic Error: {e}")
                 st.stop()
 
-        # --- [အဆင့် ၄/၆] AI Voice Generation ---
-        with st.spinner(f"⏳ [အဆင့်၄/၆] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
-            pbar.progress(60, text="🎙️ [အဆင့် ၄/၆] အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
+        # --- [အဆင့် ၃/၆] AI Voice Generation ---
+        with st.spinner(f"⏳ [အဆင့်၃/၆] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
+            pbar.progress(50, text="🎙️ [အဆင့် ၃/၆] အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
             try: 
                 asyncio.run(generate_tts(
-                    speech_text, voice_char, a_generated, engine=audio_engine_choice, 
+                    clean_raw_text, voice_char, a_generated, engine=audio_engine_choice, 
                     ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, 
                     gemini_key=synergy_key if synergy_key else api_key_input, pitch=pitch_level, voice_fx=fx_level
                 ))
@@ -242,17 +242,34 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                 st.error(f"အသံထုတ်လုပ်ခြင်းမအောင်မြင်ပါ: {e}")
                 st.stop()
 
+        # --- [အဆင့် ၄/၆] Whisper Forced Alignment ---
+        with st.spinner("⏳ [အဆင့်၄/၆] Whisper ဖြင့် အသံနှင့် စာတန်းကို တိကျစွာ ချိန်ညှိနေပါသည်..."):
+            pbar.progress(70, text="📝 [အဆင့် ၄/၆] Whisper Word-level Sync ပြုလုပ်နေပါသည်...")
+            try:
+                success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(a_generated, clean_raw_text, groq_key_fc, sub_short)
+                if not success_sync:
+                    st.error(f"❌ Whisper Sync Error: {err_sync}")
+                    st.stop()
+            except Exception as e:
+                st.error(f"❌ Alignment Failed: {e}")
+                st.stop()
+
         # --- [အဆင့် ၅/၆] Final Video Merge ---
         with st.spinner("⏳ [အဆင့်၅/၆] ဗီဒီယိုနှင့် စာတန်းထိုးပေါင်းစပ်နေပါသည်..."):
-            pbar.progress(80, text="🎬 [အဆင့် ၅/၆] ဗီဒီယိုနှင့်စာတန်းထိုး ပေါင်းစပ်နေပါသည်...")
-            success, err_msg = render_premium_saas_video(
-                v_input, a_generated, parsed_timestamps, v_final, video_ratio, 
-                cb_bypass, cb_blur, watermark_text, subtitle_mode, cb_mirror, cb_color, cb_grain, cb_fps, 
-                sub_position=sub_position, sub_color=sub_color, sub_size=sub_size, sub_thickness=sub_thickness, 
-                sub_bg=sub_bg, use_freeze=cb_freeze, logo_path=uploaded_logo, font_path=selected_font
+            pbar.progress(85, text="🎬 [အဆင့် ၅/၆] Master Video Rendering ပြုလုပ်နေပါသည်...")
+            
+            # 🔴 ARCHITECTURE UPGRADE: Sending VideoConfig object
+            render_cfg = VideoConfig(
+                ratio=video_ratio, use_bypass=cb_bypass, use_blur=cb_blur, watermark=watermark_text, 
+                subtitle_mode=subtitle_mode, use_mirror=cb_mirror, use_color=cb_color, use_grain=cb_grain, 
+                use_fps=cb_fps, sub_position=sub_position, sub_color=sub_color, sub_size=sub_size, 
+                sub_thickness=sub_thickness, sub_bg=sub_bg, use_freeze=cb_freeze, logo_path=uploaded_logo, 
+                font_path=selected_font
             )
+            
+            success, err_msg = render_premium_saas_video(v_input, a_generated, parsed_timestamps, v_final, render_cfg)
             if not success: 
-                st.error(f"❌ Sync Failure: {err_msg}")
+                st.error(f"❌ Render Failure: {err_msg}")
                 st.stop()
 
         # --- [အဆင့် ၆/၆] BGM Mixing ---
