@@ -109,7 +109,6 @@ async def generate_tts(text, voice_model, output_file, engine="Edge-TTS", ttsmak
     if not chunk_files:
         raise Exception(f"TTS Generation Failed. Reason: {last_tts_error}")
 
-    # Chunk အပိုင်းအစလေးများကို Master Audio File အဖြစ် ပေါင်းစပ်ခြင်း
     with open("audio_concat.txt", "w", encoding="utf-8") as f:
         for c in chunk_files:
             f.write(f"file '{c}'\n")
@@ -117,13 +116,10 @@ async def generate_tts(text, voice_model, output_file, engine="Edge-TTS", ttsmak
     subprocess.run([FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0", "-i", "audio_concat.txt", "-c:a", "pcm_s16le", "-ar", "44100", temp_out], capture_output=True)
 
     for c in chunk_files:
-        if os.path.exists(c):
-            os.remove(c)
+        if os.path.exists(c): os.remove(c)
+    if os.path.exists("audio_concat.txt"): os.remove("audio_concat.txt")
 
-    if os.path.exists("audio_concat.txt"):
-        os.remove("audio_concat.txt")
-
-    # Cinematic Voice FX (Effect) များ ထည့်သွင်းခြင်း
+    # 🔴 PRO FEATURES: Cinematic Voice FX Updates
     if needs_ffmpeg:
         audio = ffmpeg.input(temp_out)
         if pitch != 0:
@@ -141,6 +137,11 @@ async def generate_tts(text, voice_model, output_file, engine="Edge-TTS", ttsmak
         elif "Underwater" in voice_fx: audio = audio.filter('lowpass', f=400).filter('volume', 1.5)
         elif "Deep & Energetic (Motivation)" in voice_fx: audio = audio.filter('bass', g=10, f=150).filter('treble', g=5, f=3000).filter('volume', 1.5)
         elif "Deep & Chilling (Horror)" in voice_fx: audio = audio.filter('bass', g=15, f=80).filter('aecho', 0.8, 0.85, 60, 0.3).filter('volume', 1.2)
+        
+        # 🌀 New: Spatial 3D Audio (Pan L/R)
+        elif "Spatial 3D" in voice_fx: audio = audio.filter('apulsator', hz=0.15).filter('volume', 1.2)
+        # 🎭 New: Multi-Persona Voice Modulation (Simulates pitch shifting entities)
+        elif "Multi-Persona" in voice_fx: audio = audio.filter('vibrato', f=2.0, d=0.3).filter('aecho', 0.8, 0.88, 30, 0.2)
 
         try:
             (audio.output(output_file, acodec='pcm_s16le', ac=1, ar='44100').overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True))
