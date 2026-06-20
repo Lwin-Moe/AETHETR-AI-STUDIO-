@@ -11,13 +11,14 @@ from google import genai
 from groq import Groq
 import openai
 
-# ခွဲထုတ်ထားသော စက်ယန္တရား (Engines) များကို လှမ်းခေါ်ခြင်း
-from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key, GROQ_KEY_FILE
+# 🔴 FIX: GROQ_KEY_FILE ကို Import မလုပ်တော့ဘဲ load_key ကိုသာ အသုံးပြုမည်
+from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import generate_whisper_sync_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
 
-def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
+# 🔴 FIX: app.py မှ Parameter ၃ ခုပို့ပို့ ၄ ခုပို့ပို့ အလုပ်လုပ်စေရန် groq_key_fc=None ထည့်ပေးထားသည်
+def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     """Movie Dubbing Studio ၏ UI အပြည့်အစုံနှင့် Workflow ကို မောင်းနှင်မည့် Function"""
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
     st.markdown("နိုင်ငံခြား ဇာတ်လမ်းတိုများကို မြန်မာလို အလိုအလျောက် ဘာသာပြန်ပြီး အသံထည့်ပါ။ (Groq Whisper Sync)")
@@ -54,7 +55,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
         cb_blur = st.checkbox("👁️ Cinematic Black Mask", value=True)
         cb_thumb_text = st.checkbox("🖼️ Add Viral Title to Thumbnail", value=True)
         
-        # 🔴 NEW FEATURE: Thumbnail Style ရွေးချယ်ခွင့်
         md_thumb_style = st.selectbox("🖼️ Thumbnail Style", ["🔥 Viral TikTok Style", "🎬 Cinematic Movie Poster", "👻 Horror / Mystery", "💎 Premium / Luxury", "⚡ Clean / Minimal"], key="md_thumb_style")
 
         st.markdown("<b>©️ Brand Watermark</b>", unsafe_allow_html=True)
@@ -95,7 +95,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
         dynamic_options = ["Synergy Puck (Male)", "Synergy Aoede (Female)", "Synergy Charon (Male - Deep)"] if "Synergy" in audio_engine_choice else (["Adam (Male Deep)", "Rachel (Female)"] if "ElevenLabs" in audio_engine_choice else (["TTSMaker Male", "TTSMaker Female"] if "TTSMaker" in audio_engine_choice else ["ဇော်ဇော် (Male)", "အောင်အောင် (Deep)", "နှင်းနှင်း (Female)"]))
         voice_char = st.selectbox("Select Character Voice", dynamic_options, index=0)
         pitch_level = st.slider("🎙️ Voice Pitch (Frequency Adjust)", min_value=-30, max_value=30, value=0, step=5)
-        fx_level = st.selectbox("🎧 Cinematic Voice FX", ["None", "🎙️ Epic Trailer Voice", "📻 Walkie-Talkie", "🏛️ Cinematic Reverb", "👹 Demon / Monster", "🤫 ASMR / Whisper", "🤖 Robot / Cyborg", "📞 Old Telephone", "⛰️ Deep Cave Echo", "🌊 Underwater / Muffled", "🔥 Deep & Energetic (Motivation)", "👻 Deep & Chilling (Horror)"])
+        fx_level = st.selectbox("🎧 Cinematic Voice FX", ["None", "🎙️ Epic Trailer Voice", "📻 Walkie-Talkie", "🏛️ Cinematic Reverb", "👹 Demon / Monster", "🤫 ASMR / Whisper", "🤖 Robot / Cyborg", "📞 Old Telephone", "⛰️ Deep Cave Echo", "🌊 Underwater / Muffled", "🔥 Deep & Energetic (Motivation)", "👻 Deep & Chilling (Horror)", "🌀 Spatial 3D Audio (Pan L/R)", "🎭 Multi-Persona (Auto-Pitch)"])
 
         st.markdown("<div class='sub-box'>", unsafe_allow_html=True)
         st.markdown("<p style='font-weight: bold; color: #818cf8; font-size: 16px;'>📝 Subtitle Pro Settings</p>", unsafe_allow_html=True)
@@ -146,7 +146,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                 st.stop()
             extract_audio_fast(v_input, a_extracted)
 
-        # --- [အဆင့် ၂/၇] AI Script & Tags (Golden Rule: Pure Text Output) ---
+        # --- [အဆင့် ၂/၇] AI Script & Tags ---
         with st.spinner(f"⏳ [အဆင့်၂/၇] {ai_provider} ဖြင့် ဇာတ်ညွှန်းနှင့် Title ထုတ်လုပ်နေပါသည်..."):
             pbar.progress(30, text=f"🤖 [အဆင့် ၂/၇] ဇာတ်ညွှန်း၊ Title နှင့် Hashtags ဖန်တီးနေပါသည်...")
             try:
@@ -172,7 +172,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                             media_file = client.files.upload(file=target_file)
                             while "PROCESSING" in str(client.files.get(name=media_file.name).state): time.sleep(2)
                             
-                            # 🔴 GOLDEN RULE: Output Pure Text instead of SRT
                             gemini_prompt = f"Watch the provided video carefully. Invent a completely ORIGINAL, highly engaging storytelling recap in Burmese. Do NOT just translate. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output pure text narrative. {extra_rules}" if "Original" in recap_mode else f"Listen to the audio. Translate and adapt the text into highly engaging, natural spoken Burmese. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output pure text narrative. {extra_rules}"
                             
                             response = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, gemini_prompt])
@@ -223,8 +222,17 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
         # --- [အဆင့် ၄/၇] Whisper Forced Alignment (Groq API) ---
         with st.spinner("⏳ [အဆင့်၄/၇] Whisper ဖြင့် အသံနှင့် စာတန်းကို တိကျစွာ ချိန်ညှိနေပါသည်..."):
             pbar.progress(65, text="📝 [အဆင့် ၄/၇] Whisper Word-level Sync ပြုလုပ်နေပါသည်...")
-            groq_key_to_use = load_key(GROQ_KEY_FILE)
-            if not groq_key_to_use: groq_key_to_use = api_key_input # Fallback
+            
+            # 🔴 FIX: Groq Key ကို နေရာပေါင်းစုံမှ ရှာဖွေပေးမည့် Bullet-proof ယန္တရား
+            groq_key_to_use = groq_key_fc
+            if not groq_key_to_use:
+                try: groq_key_to_use = load_key("GROQ_API_KEY") # .env system
+                except: pass
+            if not groq_key_to_use:
+                try: groq_key_to_use = load_key("saved_groq_key.txt") # Old text file system
+                except: pass
+            if not groq_key_to_use:
+                groq_key_to_use = api_key_input # Final Fallback
             
             success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(a_generated, st.session_state.generated_script, groq_key_to_use, sub_short)
             if not success_sync:
@@ -267,7 +275,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
                     thumb_name = f"thumb_{thumb_suffix}_{run_id}.jpg"
                     try:
                         if cb_thumb_text:
-                            # 🔴 NEW FIX: UI မှရွေးချယ်ထားသော style ဖြင့် Thumbnail ကိုလှမ်းခေါ်သည်
                             success_thumb, _ = generate_professional_thumbnail(v_input, thumb_name, st.session_state.viral_title if st.session_state.viral_title else "Viral Video", t_val, style=md_thumb_style, font_path=selected_font)
                         else:
                             ffmpeg.input(v_input, ss=t_val).output(thumb_name, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
