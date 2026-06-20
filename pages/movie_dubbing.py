@@ -198,20 +198,25 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.session_state.md_generated_script = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
             except Exception as e: st.error(f"Logic Error: {e}"); st.stop()
 
-        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
-            pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
+        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (ဇာတ်လမ်းရှည်ပါက ၂-၃ မိနစ်ခန့် ကြာနိုင်ပါသည်)"):
+            pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည် (အချိန်အနည်းငယ် ယူပါမည်)...")
             try: 
                 asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=synergy_key if synergy_key else api_key_input, pitch=pitch_level, voice_fx=fx_level))
                 st.session_state.md_audio_dur = get_file_duration(a_generated)
             except Exception as e: st.error(f"TTS Error: {e}"); st.stop()
 
         if subtitle_mode != "No Subtitle":
-            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
+            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (Audio Compressing...)"):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
+                
+                # 🔴 500 ERROR FIX: Groq 25MB Limit ကို ကျော်ဖြတ်ရန် WAV အား MP3 အဖြစ် ချုံ့ပေးခြင်း
+                sync_audio_path = "md_sync_compressed.mp3"
+                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "libmp3lame", "-ab", "64k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
+                
                 groq_key_to_use = groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input
                 if groq_key_to_use:
                     try:
-                        success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(a_generated, st.session_state.md_generated_script, groq_key_to_use, sub_short)
+                        success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(sync_audio_path, st.session_state.md_generated_script, groq_key_to_use, sub_short)
                         if success_sync: st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
                         else: st.error(f"❌ Whisper Sync Error: {err_sync}"); st.stop()
                     except Exception as e: st.error(f"Whisper Request Failed: {e}"); st.stop()
@@ -280,7 +285,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
-                    # --- Custom FFmpeg Pipeline for Dubbing ---
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
