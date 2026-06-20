@@ -6,15 +6,35 @@ import subprocess
 import ffmpeg
 import imageio_ffmpeg
 import yt_dlp
+from dataclasses import dataclass
 
-# 👇 FIX: Prioritize system FFmpeg
 if shutil.which("ffmpeg"):
     FFMPEG_BINARY = "ffmpeg"
 else:
     FFMPEG_BINARY = imageio_ffmpeg.get_ffmpeg_exe()
 
+# --- ARCHITECTURE UPGRADE: Configuration Object ---
+@dataclass
+class VideoConfig:
+    ratio: str
+    use_bypass: bool = False
+    use_blur: bool = False
+    watermark: str = ""
+    subtitle_mode: str = "Both (Burn + SRT)"
+    use_mirror: bool = False
+    use_color: bool = False
+    use_grain: bool = False
+    use_fps: bool = False
+    sub_position: str = "Bottom"
+    sub_color: str = "Yellow"
+    sub_size: int = 28
+    sub_thickness: float = 2.5
+    sub_bg: bool = False
+    use_freeze: bool = False
+    logo_path: str = None
+    font_path: str = "Padauk.ttf"
+
 def get_file_duration(file_path):
-    """မီဒီယာဖိုင်များ၏ ကြာချိန်ကို တိုင်းတာပေးမည်"""
     try:
         cmd = [FFMPEG_BINARY, "-i", file_path]
         result = subprocess.run(cmd, capture_output=True, text=True, errors='ignore')
@@ -22,17 +42,11 @@ def get_file_duration(file_path):
         if match:
             h, m, s = match.groups()
             return int(h) * 3600 + int(m) * 60 + float(s)
-    except Exception: 
-        pass
+    except Exception: pass
     return 600.0 
 
-# =====================================================================
-# 📌 MEDIA ACQUISITION (DOWNLOAD & EXTRACT)
-# =====================================================================
 def download_video_from_url(url, output_path="input_temp.mp4"):
-    """YouTube, FB, TikTok စသည့် URL များမှ ဗီဒီယို ဒေါင်းလုဒ်ဆွဲမည်"""
-    if os.path.exists(output_path):
-        os.remove(output_path)
+    if os.path.exists(output_path): os.remove(output_path)
     ydl_opts = {
         'outtmpl': output_path,
         'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -41,28 +55,19 @@ def download_video_from_url(url, output_path="input_temp.mp4"):
         'extractor_args': {'youtube': {'player_client': ['tv', 'ios', 'web']}}
     }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            ydl.download([url])
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
         return output_path
-    except Exception as e:
-        raise Exception(f"Video Download Error: {str(e)}")
+    except Exception as e: raise Exception(f"Video Download Error: {str(e)}")
 
 def extract_audio_fast(video_in, audio_out="temp_extracted.mp3"):
-    """ဗီဒီယိုထဲမှ အသံကို အမြန်ခွဲထုတ်မည်"""
-    if os.path.exists(audio_out):
-        os.remove(audio_out)
+    if os.path.exists(audio_out): os.remove(audio_out)
     try:
         (ffmpeg.input(video_in).output(audio_out, acodec='libmp3lame', ac=1, ar='16000')
          .run(cmd=FFMPEG_BINARY, overwrite_output=True, capture_stdout=True, capture_stderr=True))
-        if os.path.exists(audio_out):
-            return audio_out
-    except Exception:
-        pass
+        if os.path.exists(audio_out): return audio_out
+    except Exception: pass
     return None
 
-# =====================================================================
-# 📌 TIKTOK HOOK & LOOP SYSTEM
-# =====================================================================
 def add_tiktok_hook_overlay(video_input, output_path, hook_text, niche="💡 Fun Facts / Trivia", duration=3.5, font_path="Padauk.ttf"):
     try:
         video = ffmpeg.input(video_input).video
@@ -80,8 +85,7 @@ def add_tiktok_hook_overlay(video_input, output_path, hook_text, niche="💡 Fun
         max_len = max(len(line) for line in wrapped_hook)
         centered_hook = "\n".join(line.center(max_len, " ") for line in wrapped_hook)
         
-        with open("hook_text.txt", "w", encoding="utf-8") as f: 
-            f.write(centered_hook)
+        with open("hook_text.txt", "w", encoding="utf-8") as f: f.write(centered_hook)
             
         video = ffmpeg.filter(video, 'drawbox', x=0, y='h*0.3', w='iw', h='h*0.4', color=style["bg_color"], thickness='fill', enable=f'between(t,0,{duration})')
         video = ffmpeg.filter(video, 'drawtext', textfile='hook_text.txt', fontfile=font_path.replace('\\', '/'), fontsize=style["font_size"], fontcolor=style["text_color"], bordercolor='black', borderw=3, x='(w-text_w)/2', y='(h-text_h)/2', line_spacing=15, text_align='C', enable=f'between(t,0,{duration})')
@@ -93,8 +97,7 @@ def add_tiktok_hook_overlay(video_input, output_path, hook_text, niche="💡 Fun
         out = ffmpeg.output(video, audio, output_path, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', audio_bitrate='128k', preset='superfast')
         out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         return output_path
-    except Exception:
-        return video_input
+    except Exception: return video_input
 
 def add_tiktok_loop_point(video_input, output_path, font_path="Padauk.ttf"):
     try:
@@ -105,12 +108,8 @@ def add_tiktok_loop_point(video_input, output_path, font_path="Padauk.ttf"):
         out = ffmpeg.output(video, audio, output_path, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', audio_bitrate='128k', preset='superfast')
         out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         return output_path
-    except Exception:
-        return video_input
+    except Exception: return video_input
 
-# =====================================================================
-# 📌 PROFESSIONAL THUMBNAIL SYSTEM
-# =====================================================================
 THUMBNAIL_STYLES = {
     "🔥 Viral TikTok Style": {"text_position": "center", "font_size_range": (50, 90), "bg_overlay": "gradient_bottom", "text_effect": "stroke_bold", "color_scheme": "yellow_red"},
     "🎬 Cinematic Movie Poster": {"text_position": "bottom_third", "font_size_range": (40, 70), "bg_overlay": "vignette_dark", "text_effect": "shadow_soft", "color_scheme": "white_gold"},
@@ -172,38 +171,35 @@ def generate_professional_thumbnail(video_input, output_path, title_text, timest
         video = ffmpeg.filter(video, 'drawtext', textfile='thumb_pro_text.txt', fontfile=font_path.replace('\\', '/'), fontcolor=colors["text"], fontsize=font_size, bordercolor=colors["shadow"], borderw=border_width, box=1, boxcolor=colors["box"], boxborderw=15, x='(w-text_w)/2', y=y_position, line_spacing=15, text_align='C')
         ffmpeg.output(video, output_path, vframes=1, qscale=2).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         return True, output_path
-    except Exception as e:
-        return False, str(e)
+    except Exception as e: return False, str(e)
 
-# =====================================================================
-# 📌 MAIN VIDEO RENDERING SYSTEM
-# =====================================================================
-def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, ratio, use_bypass=False, use_blur=False, watermark="", subtitle_mode="Both (Burn + SRT)", use_mirror=False, use_color=False, use_grain=False, use_fps=False, sub_position="Bottom", sub_color="Yellow", sub_size=28, sub_thickness=2.5, sub_bg=False, use_freeze=False, logo_path=None, font_path="Padauk.ttf"):
+# --- REFACTORED MAIN RENDER FUNCTION ---
+def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, config: VideoConfig):
     try:
         a_dur = get_file_duration(in_a)
         video = ffmpeg.input(in_v).video
-        v_w, v_h = (720, 1280) if "9:16" in ratio else (1280, 720)
+        v_w, v_h = (720, 1280) if "9:16" in config.ratio else (1280, 720)
         video = ffmpeg.filter(video, 'scale', v_w, v_h, force_original_aspect_ratio='increase').filter('crop', v_w, v_h)
 
-        if use_bypass: video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
-        if use_mirror: video = ffmpeg.filter(video, 'hflip')
-        if use_color: video = ffmpeg.filter(video, 'eq', brightness=0.02, contrast=1.05, saturation=1.1)
-        if use_grain: video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
-        if use_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
-        if use_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
+        if config.use_bypass: video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
+        if config.use_mirror: video = ffmpeg.filter(video, 'hflip')
+        if config.use_color: video = ffmpeg.filter(video, 'eq', brightness=0.02, contrast=1.05, saturation=1.1)
+        if config.use_grain: video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
+        if config.use_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
+        if config.use_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
 
         audio = ffmpeg.input(in_a).audio
-        if use_blur: video = ffmpeg.filter(video, 'drawbox', x=0, y='ih-90', w='iw', h=90, color='black@0.95', thickness='fill')
-        if watermark: video = ffmpeg.filter(video, 'drawtext', text=watermark, x='w-tw-15', y='15', fontsize=30, fontcolor='white@0.5')
+        if config.use_blur: video = ffmpeg.filter(video, 'drawbox', x=0, y='ih-90', w='iw', h=90, color='black@0.95', thickness='fill')
+        if config.watermark: video = ffmpeg.filter(video, 'drawtext', text=config.watermark, x='w-tw-15', y='15', fontsize=30, fontcolor='white@0.5')
 
-        if logo_path and os.path.exists(logo_path):
-            logo = ffmpeg.input(logo_path)
+        if config.logo_path and os.path.exists(config.logo_path):
+            logo = ffmpeg.input(config.logo_path)
             logo = ffmpeg.filter(logo, 'scale', -1, 80)
             video = ffmpeg.overlay(video, logo, x='W-w-20', y=20)
 
-        if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
-            wrap_width = 25 if "9:16" in ratio else 45
-            safe_font_path = font_path.replace('\\', '/')
+        if config.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
+            wrap_width = 25 if "9:16" in config.ratio else 45
+            safe_font_path = config.font_path.replace('\\', '/')
 
             for i, (start, end, text) in enumerate(parsed_timestamps):
                 wrapped_lines = textwrap.wrap(text, width=wrap_width)
@@ -212,26 +208,24 @@ def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, ratio, use_b
                 centered_text = "\n".join(line.center(max_len, " ") for line in wrapped_lines)
 
                 txt_filename = f"temp_sub_{i}.txt"
-                with open(txt_filename, "w", encoding="utf-8") as tf:
-                    tf.write(centered_text)
+                with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
 
-                if "Center" in sub_position: y_expr = "(h-text_h)/2"
-                elif "Top" in sub_position: y_expr = "150"
+                if "Center" in config.sub_position: y_expr = "(h-text_h)/2"
+                elif "Top" in config.sub_position: y_expr = "150"
                 else: y_expr = "h-text_h-150"
 
                 c_str = "yellow"
-                if "White" in sub_color: c_str = "white"
-                elif "Green" in sub_color: c_str = "green"
-                elif "Red" in sub_color: c_str = "red"
-                elif "Gold" in sub_color: c_str = "gold"
+                if "White" in config.sub_color: c_str = "white"
+                elif "Green" in config.sub_color: c_str = "green"
+                elif "Red" in config.sub_color: c_str = "red"
+                elif "Gold" in config.sub_color: c_str = "gold"
 
-                box_str = 1 if sub_bg else 0
-                box_color = 'black@0.6' if sub_bg else 'black@0.0'
+                box_str = 1 if config.sub_bg else 0
+                box_color = 'black@0.6' if config.sub_bg else 'black@0.0'
 
-                video = ffmpeg.filter(video, 'drawtext', textfile=txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=sub_size, bordercolor='black', borderw=sub_thickness, box=box_str, boxcolor=box_color, boxborderw=10, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
+                video = ffmpeg.filter(video, 'drawtext', textfile=txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=config.sub_size, bordercolor='black', borderw=config.sub_thickness, box=box_str, boxcolor=box_color, boxborderw=10, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
 
         out = ffmpeg.output(video, audio, out_v, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=23, t=a_dur)
         out.run(cmd=FFMPEG_BINARY, overwrite_output=True, capture_stdout=True, capture_stderr=True)
         return True, "Success"
-    except ffmpeg.Error as e:
-        return False, e.stderr.decode('utf-8', errors='ignore')
+    except ffmpeg.Error as e: return False, e.stderr.decode('utf-8', errors='ignore')
