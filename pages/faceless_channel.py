@@ -4,11 +4,9 @@ import time
 import asyncio
 import subprocess
 import shutil
-import random
 import re
 import urllib.parse
 import requests
-import ffmpeg
 from google import genai
 
 # ခွဲထုတ်ထားသော စက်ယန္တရား (Engines) များကို လှမ်းခေါ်ခြင်း
@@ -16,7 +14,7 @@ from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_f
 from core_engines.ai_writer import generate_faceless_script, predict_virality_score
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import generate_whisper_sync_srt
-from core_engines.video_render import render_premium_saas_video, VideoConfig, generate_professional_thumbnail, get_file_duration, FFMPEG_BINARY
+from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, FFMPEG_BINARY
 
 def render_faceless_studio(api_key_input, saved_gemini, groq_key_fc):
     """Faceless Studio ၏ UI အပြည့်အစုံနှင့် Workflow ကို မောင်းနှင်မည့် Function"""
@@ -40,6 +38,9 @@ def render_faceless_studio(api_key_input, saved_gemini, groq_key_fc):
         fc_niche = st.selectbox("Select Niche", ["👻 Horror / Creepypasta", "💔 Reddit Relationship Drama", "🧠 Dark Psychology", "💡 Fun Facts / Trivia", "🚀 Motivation / Mindset", "📜 Ancient History / Myths"])
         fc_ratio = st.selectbox("Video Ratio", ["9:16 (TikTok/Shorts)", "16:9 (YouTube)"], key="fc_ratio")
         fc_duration = st.slider("⏱️ Story Duration (Minutes)", 1, 10, 3)
+        
+        # 🔴 NEW FIX: Thumbnail Style ကို UI တွင် ရွေးချယ်ခွင့် ပေးလိုက်ခြင်း
+        fc_thumb_style = st.selectbox("🖼️ Thumbnail Style", ["🔥 Viral TikTok Style", "🎬 Cinematic Movie Poster", "👻 Horror / Mystery", "💎 Premium / Luxury", "⚡ Clean / Minimal"], key="fc_thumb_style")
         
         st.markdown("<b>📝 Subtitle Pro Settings</b>", unsafe_allow_html=True)
         fc_selected_font = st.selectbox("🔤 Font Style", available_fonts, index=0, key="fc_font")
@@ -230,7 +231,7 @@ Story: {fc_story_text[:500]}"""
                 st.stop()
 
         # --- [အဆင့် ၄/၅] Whisper Sync ---
-        with st.spinner("⏳ [အဆင့်၄/၅] စာတန်းထိုးများကို ချိန်ညှိနေပါသည်..."):
+        with spinner("⏳ [အဆင့်၄/၅] စာတန်းထိုးများကို ချိန်ညှိနေပါသည်..."):
             pbar.progress(70, text="📝 Timeline ချိန်ညှိနေပါသည်...")
             fc_parsed = None
             if groq_key_fc:
@@ -252,15 +253,11 @@ Story: {fc_story_text[:500]}"""
         with st.spinner("⏳ [အဆင့်၅/၅] အားလုံးကိုပေါင်းစပ်ပြီး Master Video ထုတ်လုပ်နေပါသည်..."):
             pbar.progress(85, text="🎬 Master Rendering အလုပ်လုပ်နေပါသည်...")
             try:
-                # 🔴 ARCHITECTURE UPGRADE: Sending VideoConfig object
-                render_cfg = VideoConfig(
-                    ratio=fc_ratio, use_bypass=True, subtitle_mode=fc_subtitle_mode, 
-                    sub_position=fc_sub_position, sub_color=fc_sub_color, sub_size=fc_sub_size, 
-                    sub_thickness=2.5, sub_bg=False, font_path=fc_selected_font
+                success, err_msg = render_premium_saas_video(
+                    "fc_video_loop.mp4", "fc_audio.wav", fc_parsed, v_final, fc_ratio, 
+                    use_bypass=True, subtitle_mode=fc_subtitle_mode, sub_position=fc_sub_position, 
+                    sub_color=fc_sub_color, sub_size=fc_sub_size, sub_thickness=2.5, sub_bg=False, font_path=fc_selected_font
                 )
-                
-                success, err_msg = render_premium_saas_video("fc_video_loop.mp4", "fc_audio.wav", fc_parsed, v_final, render_cfg)
-                
                 if not success: 
                     st.error(f"❌ Video Generation Output Failure! Internal Engine Log: {err_msg}")
                     st.stop()
@@ -281,7 +278,8 @@ Story: {fc_story_text[:500]}"""
                     for thumb_suffix, t_val in [("A", t_A), ("B", t_B)]:
                         thumb_name = f"thumb_{thumb_suffix}_{run_id}.jpg"
                         try:
-                            success_thumb, _ = generate_professional_thumbnail(v_final, thumb_name, st.session_state.viral_title if st.session_state.viral_title else "Viral Video", t_val, style="🔥 Viral TikTok Style", font_path=fc_selected_font)
+                            # 🔴 NEW FIX: UI တွင်ရွေးချယ်ထားသော style (fc_thumb_style) ကို အသုံးပြုထားခြင်း
+                            success_thumb, _ = generate_professional_thumbnail(v_final, thumb_name, st.session_state.viral_title if st.session_state.viral_title else "Viral Video", t_val, style=fc_thumb_style, font_path=fc_selected_font)
                             if success_thumb:
                                 if thumb_suffix == "A": st.session_state.thumb_path_A = thumb_name
                                 elif thumb_suffix == "B": st.session_state.thumb_path_B = thumb_name
