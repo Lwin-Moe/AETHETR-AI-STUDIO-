@@ -1,0 +1,55 @@
+import os
+import base64
+import urllib.request
+
+# --- Key Save Files Constants ---
+API_KEY_FILE = "saved_api_key.txt"
+ELEVEN_KEY_FILE = "saved_eleven_key.txt"
+GROQ_KEY_FILE = "saved_groq_key.txt"
+OPENAI_KEY_FILE = "saved_openai_key.txt"
+ELEVEN_VOICE_ID_FILE = "saved_eleven_voice_id.txt"
+
+def download_default_font():
+    """Default Font ဖြစ်သော Padauk.ttf မရှိပါက ဒေါင်းလုဒ်ဆွဲပေးမည်"""
+    local_font_path = "Padauk.ttf"
+    if not os.path.exists(local_font_path):
+        try:
+            urllib.request.urlretrieve("https://github.com/google/fonts/raw/main/ofl/padauk/Padauk-Regular.ttf", local_font_path)
+        except Exception:
+            pass
+
+def get_available_fonts():
+    """font folder ထဲရှိ .ttf ဖိုင်များကို ရှာဖွေပေးမည်"""
+    download_default_font()
+    font_list = ["Padauk.ttf"]
+    if os.path.exists("font"):
+        for f in os.listdir("font"):
+            if f.endswith(".ttf") or f.endswith(".otf"):
+                font_list.append(os.path.join("font", f))
+    return list(set(font_list))
+
+def load_key(file_path):
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return ""
+
+def save_key(file_path, key):
+    with open(file_path, "w", encoding="utf-8") as f:
+        f.write(key)
+
+def get_download_link(file_path, file_name, link_text):
+    if not os.path.exists(file_path):
+        return ""
+    with open(file_path, "rb") as f:
+        b64 = base64.b64encode(f.read()).decode()
+    return f'<a href="data:application/octet-stream;base64,{b64}" download="{file_name}" style="display:block; text-align:center; margin-top:10px; padding:12px 20px; background:linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); color:white; text-decoration:none; border-radius:8px; font-weight:bold;"> 📥  {link_text}</a>'
+
+def cleanup_temp_files():
+    """Rendering ပြီးတိုင်း မလိုအပ်သော ဖိုင်အကြွင်းအကျန်များကို ဖျက်ပစ်မည်"""
+    for f in os.listdir("."):
+        if f.startswith(("fc_clip_", "fc_img_", "raw_fc_clip_", "temp_", "subtitles.", "thumb_", "FACELESS_FINAL_", "AETHER_RECAP_FINAL_", "fc_audio.wav", "fc_video_loop.mp4", "hook_text.txt", "thumb_pro_text.txt", "thumb_text.txt")):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
