@@ -48,7 +48,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         st.markdown("<b>🌐 Translation Settings</b>", unsafe_allow_html=True)
         target_lang = st.selectbox("Target Language", ["Myanmar (မြန်မာ)", "English", "Thai (ไทย)", "Indonesian (ไทย)"])
         
-        # 🔴 NEW FIX: Translation Tone ရွေးချယ်ခွင့် ထပ်တိုးပေးခြင်း
         trans_tone = st.selectbox("🎭 Translation Style", ["Natural & Conversational (သဘာဝကျကျ)", "Gen-Z / Slang (လူငယ်သုံးစကား)", "Formal / Direct (တိုက်ရိုက်ဘာသာပြန်)"])
         
         st.markdown("<b>🎥 Copyright Bypass Options</b>", unsafe_allow_html=True)
@@ -110,7 +109,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             else: download_video_from_url(video_url, v_input)
             extract_audio_fast(v_input, a_out)
             
-            # 🔴 Extract preview frame for Blur Setting
+            # Extract preview frame
             ffmpeg.input(v_input, ss=min(get_file_duration(v_input)/2, 5)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         except Exception as e: st.error(str(e)); st.stop()
 
@@ -141,7 +140,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         try:
             dict_prompt = f"\n[CRITICAL]: Apply this custom dictionary EXACTLY. Do not translate these names:\n{custom_dict}" if custom_dict.strip() else ""
             
-            # 🔴 FIX: Advanced Localization Prompt
             tone_instructions = "Translate literally word-by-word."
             if "Natural" in trans_tone:
                 tone_instructions = "Translate contextually and naturally. Use natural everyday spoken language (e.g., instead of translating 'What's up' literally, use the natural greeting equivalent in the target language). Avoid sounding like a robot."
@@ -206,18 +204,17 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             st.markdown("**👁️ Subtitle Blocker Settings**")
             if ts_blur:
                 blur_height = st.slider("⬛ Black Bar အမြင့် (px)", 50, 400, 100, help="မူရင်းစာတန်းကို ဖုံးကွယ်မည့် အနက်ရောင်ဘား၏ အမြင့်ကို ချိန်ညှိပါ")
-                # 🔴 NEW FIX: Live Visual Preview for Box
+                # 🔴 OpenCV အစား ပေါ့ပါးသော PIL (Pillow) ဖြင့် ပြောင်းလဲရေးသားထားသည်
                 if os.path.exists(st.session_state.ts_preview_frame):
-                    import cv2
-                    from PIL import Image
+                    from PIL import Image, ImageDraw
                     try:
-                        img = cv2.imread(st.session_state.ts_preview_frame)
-                        h, w = img.shape[:2]
-                        # Draw semitransparent black rectangle at bottom
-                        overlay = img.copy()
-                        cv2.rectangle(overlay, (0, h - blur_height), (w, h), (0, 0, 0), -1)
-                        img_new = cv2.addWeighted(overlay, 0.8, img, 0.2, 0)
-                        st.image(cv2.cvtColor(img_new, cv2.COLOR_BGR2RGB), caption="Live Blur Preview", use_column_width=True)
+                        img = Image.open(st.session_state.ts_preview_frame).convert("RGBA")
+                        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+                        draw = ImageDraw.Draw(overlay)
+                        # Black box with 80% opacity (alpha 200/255)
+                        draw.rectangle([0, img.height - blur_height, img.width, img.height], fill=(0, 0, 0, 200))
+                        img_new = Image.alpha_composite(img, overlay)
+                        st.image(img_new, caption="Live Blur Preview", use_column_width=True)
                     except Exception:
                         st.image(st.session_state.ts_preview_frame, caption="Preview")
             else:
@@ -250,7 +247,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     audio = ffmpeg.input("ts_input.mp4").audio
                     video = ffmpeg.input("ts_input.mp4").video
                     
-                    # 🔴 FIX: 'Original' ratio ဆိုလျှင် scale လုံးဝမလုပ်ပါ (9:16 bug ကို ဖြေရှင်းပြီး)
                     if video_ratio != "Original":
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         video = ffmpeg.filter(video, 'scale', v_w, v_h, force_original_aspect_ratio='increase').filter('crop', v_w, v_h)
