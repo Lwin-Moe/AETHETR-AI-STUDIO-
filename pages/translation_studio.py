@@ -18,7 +18,6 @@ from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, VideoConfig, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
 
 def generate_hybrid_thumbnail(bg_image_path, output_path, title_text, font_path="Padauk.ttf"):
-    """Pollinations AI မှရသော ပုံပေါ်တွင် ရွှေရောင်စာတန်း (Golden Text) ရိုက်နှိပ်ပေးမည့်စနစ်"""
     try:
         wrapped_text = "\n".join(line.center(max(len(l) for l in textwrap.wrap(title_text, 25)), " ") for line in (textwrap.wrap(title_text, 25) or [title_text]))
         with open("thumb_custom_text.txt", "w", encoding="utf-8") as f: f.write(wrapped_text)
@@ -36,7 +35,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
     available_fonts = get_available_fonts()
     
-    # 📌 Initialize Session States
     if "ts_step1_done" not in st.session_state: st.session_state.ts_step1_done = False
     if "ts_original_srt" not in st.session_state: st.session_state.ts_original_srt = ""
     if "ts_translated_srt" not in st.session_state: st.session_state.ts_translated_srt = ""
@@ -49,7 +47,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         st.markdown("<b>🌐 Translation Settings</b>", unsafe_allow_html=True)
         target_lang = st.selectbox("Target Language", ["Myanmar (မြန်မာ)", "English", "Thai (ไทย)", "Indonesian (ไทย)"])
         
-        # 🎭 Advanced Localization Option
         trans_tone = st.selectbox("🎭 Translation Style (ပြန်ဆိုမှုပုံစံ)", ["Natural & Conversational (သဘာဝကျကျ ဆီလျော်အောင်)", "Gen-Z / Slang (လူငယ်သုံးစကား/အလန်းစား)", "Formal / Direct (တိုက်ရိုက်ပြန်ဆိုချက်)"])
         
         st.markdown("<b>🎥 Copyright Bypass Options</b>", unsafe_allow_html=True)
@@ -86,7 +83,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
     with col_in2:
         st.markdown("<div class='sub-box'>", unsafe_allow_html=True)
         st.markdown("<p style='font-weight: bold; color: #c084fc;'>🖼️ Smart Thumbnail Settings</p>", unsafe_allow_html=True)
-        # 🖼️ Thumbnail ထုတ်မထုတ် ရွေးချယ်နိုင်သော Toggle
         gen_thumb = st.checkbox("🎨 Generate AI Art Background Thumbnail", value=True)
         custom_thumb_title = st.text_input("✍️ Custom Title (Optional)", placeholder="AI Title အစား ကိုယ်တိုင်ပေးလိုပါက ထည့်ပါ")
         st.markdown("<small style='color:gray;'>* AI Art ပေါ်တွင် ရွှေရောင်စာတန်းကို FFmpeg ဖြင့် အလိုအလျောက် ရိုက်နှိပ်ပေးပါမည်။</small>", unsafe_allow_html=True)
@@ -112,7 +108,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             else: download_video_from_url(video_url, v_input)
             extract_audio_fast(v_input, a_out)
             
-            # Extract preview frame အစမ်းကြည့်ရန်
+            # Extract preview frame
             ffmpeg.input(v_input, ss=min(get_file_duration(v_input)/2, 4)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         except Exception as e: st.error(str(e)); st.stop()
 
@@ -143,7 +139,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         try:
             dict_prompt = f"\n[CRITICAL DICTIONARY]: Apply these names exactly. Do not translate them:\n{custom_dict}" if custom_dict.strip() else ""
             
-            # 🔴 ADVANCED PROMPT: ဆီလျော်သဘာဝကျကျ ဘာသာပြန်ခိုင်းခြင်း
             if "Natural" in trans_tone:
                 tone_instructions = (
                     "Translate contextually and colloquially into highly natural, flowing Burmese speech. "
@@ -220,7 +215,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                 try:
                     img_raw = Image.open(st.session_state.ts_preview_frame).convert("RGB")
                     
-                    # 🔴 RATIO FIX: Output ဘောင်နှင့် ကွက်တိဖြစ်စေရန် PIL Image အား ညှိနှိုင်းခြင်း
                     if video_ratio == "Original":
                         v_w, v_h = img_raw.size
                         img_preview = img_raw
@@ -234,13 +228,11 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     blur_w = st.slider("📐 Blur Width (ဝါးမည့် အကွက်အကျယ်)", 10, v_w, v_w)
                     blur_h = st.slider("📏 Blur Height (ဝါးမည့် အကွက်အမြင့်)", 10, v_h, int(v_h * 0.12))
                     
-                    # Safe Box Calculation
                     box_x1 = max(0, min(blur_x, v_w - 1))
                     box_y1 = max(0, min(blur_y, v_h - 1))
                     box_x2 = max(box_x1 + 1, min(blur_x + blur_w, v_w))
                     box_y2 = max(box_y1 + 1, min(blur_y + blur_h, v_h))
                     
-                    # 🔴 PIL Gaussian Blur Overlay (သဘာဝကျကျ အစမ်းကြည့်ရှုခြင်း)
                     cropped_part = img_preview.crop((box_x1, box_y1, box_x2, box_y2))
                     blurred_part = cropped_part.filter(ImageFilter.GaussianBlur(radius=22))
                     img_preview.paste(blurred_part, (box_x1, box_y1))
@@ -280,26 +272,38 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     audio = ffmpeg.input("ts_input.mp4").audio
                     video = ffmpeg.input("ts_input.mp4").video
                     
-                    # 🔴 RATIO FIX: Original ဖြစ်ပါက Dimensions အား မပြောင်းလဲဘဲ မူရင်းအတိုင်း ထိန်းသိမ်းမည်
-                    if video_ratio != "Original":
+                    # Meticulously fetch original dimensions to avoid variables missing error
+                    if video_ratio == "Original":
+                        try:
+                            probe = ffmpeg.probe("ts_input.mp4")
+                            v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                            if v_stream:
+                                v_w, v_h = int(v_stream['width']), int(v_stream['height'])
+                            else:
+                                v_w, v_h = 1280, 720
+                        except: v_w, v_h = 1280, 720
+                    else:
+                        v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         video = ffmpeg.filter(video, 'scale', v_w, v_h, force_original_aspect_ratio='increase').filter('crop', v_w, v_h)
                     
                     if cb_bypass: video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     
-                    # 🔴 FFMEPG LOCALIZED CROP-BOXBLUR OVERLAY ENGINE
+                    # 🔴 SPLIT FILTER FIX: Prevents "multiple outgoing edges" error
                     if ts_blur and blur_w > 0 and blur_h > 0:
                         ff_x = max(0, min(blur_x, v_w - 1))
                         ff_y = max(0, min(blur_y, v_h - 1))
                         ff_w = max(10, min(blur_w, v_w - ff_x))
                         ff_h = max(10, min(blur_h, v_h - ff_y))
                         
-                        # စာတန်းရှိမည့်နေရာကို ဖြတ်ထုတ် -> ဝါးပစ် -> မူရင်းပေါ် ပြန်တင် (Overlay)
-                        blurred_stream = video.filter('crop', w=ff_w, h=ff_h, x=ff_x, y=ff_y).filter('boxblur', luma_radius=22, luma_power=2)
-                        video = ffmpeg.overlay(video, blurred_stream, x=ff_x, y=ff_y)
+                        split_video = video.split()
+                        main_bg = split_video[0]
+                        blur_target = split_video[1]
+                        
+                        blurred_stream = blur_target.filter('crop', w=ff_w, h=ff_h, x=ff_x, y=ff_y).filter('boxblur', luma_radius=22, luma_power=2)
+                        video = ffmpeg.overlay(main_bg, blurred_stream, x=ff_x, y=ff_y)
 
-                    # Subtitles Burn-in
                     if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = render_cfg.font_path.replace('\\', '/')
@@ -321,7 +325,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
                     if use_text_watermark and watermark_text:
                         video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
-                    if uploaded_logo and os.path.exists("ts_logo.png"): # logo rendering if exists
+                    if uploaded_logo and os.path.exists("ts_logo.png"):
                         try:
                             logo_input = ffmpeg.input(uploaded_logo).filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
