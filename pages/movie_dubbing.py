@@ -14,18 +14,17 @@ import openai
 
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import generate_whisper_sync_srt, parse_and_save_real_srt
+from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
 def tuples_to_srt(parsed_data):
     """Whisper မှထွက်လာသော ဒေတာများကို Editor တွင်ပြင်နိုင်ရန် SRT String သို့ပြောင်းပေးသည့်စနစ်"""
     srt_str = ""
     for i, (start_raw, end_raw, text) in enumerate(parsed_data, 1):
-        # 🔴 TYPE ERROR FIX: အချိန်များကို ဂဏန်း (Float) အဖြစ် အတိအကျ ပြောင်းလဲခြင်း
         start = float(start_raw)
         end = float(end_raw)
         
-        # 🔴 SILENCE CLIP ENGINE
+        # 🔴 SILENCE CLIP ENGINE: စကားမပြောတော့ဘဲ ငြိမ်နေချိန်တွင် စာတန်းထိုးပျောက်သွားစေရန် စာဖတ်နှုန်းဖြင့် ထိန်းချုပ်ခြင်း
         natural_dur = max(1.5, min(3.5, len(text) * 0.12))
         end = min(start + natural_dur, end)
         
@@ -43,7 +42,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
     available_fonts = get_available_fonts()
     
-    # 📌 Initialize Session States
     if "md_step1_done" not in st.session_state: st.session_state.md_step1_done = False
     if "md_generated_srt" not in st.session_state: st.session_state.md_generated_srt = ""
     if "md_generated_script" not in st.session_state: st.session_state.md_generated_script = ""
@@ -186,18 +184,19 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         except Exception as e: last_err = str(e); continue
                     if not success_gemini: raise Exception(f"Gemini Error: {last_err}")
                 else:
-                    client = Groq(api_key=api_key_input) if "Groq" in ai_provider else openai
+                    # 🔴 FIX: Properly initialize OpenAI client to avoid TypeError (unbound method)
+                    client_llm = Groq(api_key=api_key_input) if "Groq" in ai_provider else openai.OpenAI(api_key=api_key_input)
                     if "Groq" in ai_provider:
-                        with open(a_extracted, "rb") as file: transcription = client.audio.translations.create(file=(a_extracted, file.read()), model="whisper-large-v3", response_format="verbose_json")
+                        with open(a_extracted, "rb") as file: transcription = client_llm.audio.translations.create(file=(a_extracted, file.read()), model="whisper-large-v3", response_format="verbose_json")
                         segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
                         tsrt = "".join([f"{i}\n00:00:00,000 --> 00:00:10,000\n{s['text']}\n\n" for i, s in enumerate(segments, 1)])
                     else:
-                        openai.api_key = api_key_input
-                        with open(a_extracted, "rb") as file: tsrt = openai.audio.translations.create(model="whisper-1", file=file, response_format="srt")
-                        st.session_state.md_original_transcript = str(tsrt)
+                        with open(a_extracted, "rb") as file: ts_res = client_llm.audio.translations.create(model="whisper-1", file=file, response_format="srt")
+                        tsrt = str(ts_res)
+                        st.session_state.md_original_transcript = tsrt
                     
                     base_prompt = f"Translate and adapt the English text into engaging Burmese. Add audio tags. Output pure text narrative. {extra_rules}"
-                    comp = client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-5.5-pro", messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
+                    comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
                     raw_output_text = comp.choices[0].message.content
 
                 title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
@@ -225,7 +224,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 if not os.path.exists(sync_audio_path) or os.path.getsize(sync_audio_path) < 100:
                     sync_audio_path = a_generated
 
-                whisper_key = groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input
+                whisper_key = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
                 
                 try:
                     raw_srt = ""
@@ -239,9 +238,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             )
                         segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
                     else:
-                        openai.api_key = whisper_key
+                        # 🔴 FIX: Properly initialize OpenAI client to avoid TypeError (unbound method)
+                        client_openai = openai.OpenAI(api_key=whisper_key)
                         with open(sync_audio_path, "rb") as f:
-                            transcription = openai.audio.transcriptions.create(
+                            transcription = client_openai.audio.transcriptions.create(
                                 model="whisper-1", 
                                 file=f, 
                                 response_format="verbose_json"
@@ -249,7 +249,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
 
                     for i, segment in enumerate(segments, 1):
-                        # 🔴 TYPE ERROR FIX: Start နှင့် End များကို Float အဖြစ် အတင်းပြောင်းလဲခြင်း
                         start_raw = segment['start'] if isinstance(segment, dict) else segment.start
                         end_raw = segment['end'] if isinstance(segment, dict) else segment.end
                         text_raw = segment['text'] if isinstance(segment, dict) else segment.text
@@ -258,7 +257,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         end = float(end_raw)
                         text = str(text_raw).strip()
                         
-                        # SILENCE CLIP ENGINE
                         natural_dur = max(1.5, min(3.5, len(text) * 0.12))
                         end = min(start + natural_dur, end)
                         
