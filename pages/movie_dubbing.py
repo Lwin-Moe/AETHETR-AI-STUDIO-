@@ -4,7 +4,6 @@ import time
 import asyncio
 import subprocess
 import shutil
-import random
 import re
 import textwrap
 import ffmpeg
@@ -13,15 +12,15 @@ from groq import Groq
 import openai
 
 # ခွဲထုတ်ထားသော စက်ယန္တရား (Engines) များကို လှမ်းခေါ်ခြင်း
-from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files
+from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key, GROQ_KEY_FILE
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import generate_whisper_sync_srt
-from core_engines.video_render import render_premium_saas_video, VideoConfig, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
+from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
 
-def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc):
+def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider):
     """Movie Dubbing Studio ၏ UI အပြည့်အစုံနှင့် Workflow ကို မောင်းနှင်မည့် Function"""
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
-    st.markdown("နိုင်ငံခြား ဇာတ်လမ်းတိုများကို မြန်မာလို အလိုအလျောက် ဘာသာပြန်ပြီး အသံထည့်ပါ။ (Whisper Sync Enabled)")
+    st.markdown("နိုင်ငံခြား ဇာတ်လမ်းတိုများကို မြန်မာလို အလိုအလျောက် ဘာသာပြန်ပြီး အသံထည့်ပါ။ (Groq Whisper Sync)")
 
     available_fonts = get_available_fonts()
 
@@ -54,6 +53,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         st.markdown("<b>🎬 Visual & Subs</b>", unsafe_allow_html=True)
         cb_blur = st.checkbox("👁️ Cinematic Black Mask", value=True)
         cb_thumb_text = st.checkbox("🖼️ Add Viral Title to Thumbnail", value=True)
+        
+        # 🔴 NEW FEATURE: Thumbnail Style ရွေးချယ်ခွင့်
+        md_thumb_style = st.selectbox("🖼️ Thumbnail Style", ["🔥 Viral TikTok Style", "🎬 Cinematic Movie Poster", "👻 Horror / Mystery", "💎 Premium / Luxury", "⚡ Clean / Minimal"], key="md_thumb_style")
 
         st.markdown("<b>©️ Brand Watermark</b>", unsafe_allow_html=True)
         uploaded_logo = st.file_uploader("🖼️ Add Logo Image (Top Right)", type=["png", "jpg", "jpeg"])
@@ -106,7 +108,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             col_s1, col_s2 = st.columns(2)
             with col_s1:
                 sub_bg = st.checkbox("🔲 Background Box", value=True, key="md_sub_bg")
-                sub_short = st.checkbox("✂️ Short & Punchy (Hormozi)", value=True, key="md_sub_short")
+                sub_short = st.checkbox("✂️ Short & Punchy (Hormozi)", key="md_sub_short")
         else:
             st.info("💡 Burn into Video ရွေးထားမှ ချိန်ညှိနိုင်ပါမည်။")
             selected_font, sub_position, sub_color, sub_size, sub_thickness, sub_bg, sub_short = "Padauk.ttf", "Bottom", "Yellow", 28, 2.5, True, False
@@ -116,10 +118,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     # 🚀 EXECUTION WORKFLOW
     if st.button("🚀 START ONE-CLICK WORKFLOW MONETIZE GENERATOR"):
         if not api_key_input:
-            st.error("⚠️ AI API Key လိုအပ်ပါသည်။")
-            return
-        if not groq_key_fc:
-            st.error("⚠️ Groq API Key လိုအပ်ပါသည်။ (Whisper Alignment အတွက်မဖြစ်မနေလိုပါသည်)")
+            st.error("⚠️ API Key လိုအပ်ပါသည်။")
             return
         elif not uploaded_file and not video_url:
             st.error("⚠️ ဗီဒီယိုဖိုင်သို့မဟုတ် Link ထည့်ပေးပါ။")
@@ -134,9 +133,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         v_input, a_extracted, a_generated, srt_final = "input_temp.mp4", "temp_extracted.mp3", "voice_temp.wav", "subtitles.srt"
         pbar = st.progress(0, text="🚀 အလုပ်စတင်နေပါပြီ...")
         
-        # --- [အဆင့် ၁/၆] Video Fetching ---
-        with st.spinner("⏳ [အဆင့်၁/၆] ဗီဒီယို ဖိုင်အားစနစ်ထဲသို့ ဆွဲသွင်းနေပါသည်..."):
-            pbar.progress(10, text="📥 [အဆင့် ၁/၆] ဗီဒီယိုဆွဲယူနေပါသည်...")
+        # --- [အဆင့် ၁/၇] Video Fetching ---
+        with st.spinner("⏳ [အဆင့်၁/၇] ဗီဒီယို ဖိုင်အားစနစ်ထဲသို့ ဆွဲသွင်းနေပါသည်..."):
+            pbar.progress(10, text="📥 [အဆင့် ၁/၇] ဗီဒီယိုဆွဲယူနေပါသည်...")
             try:
                 if uploaded_file:
                     with open(v_input, "wb") as f: f.write(uploaded_file.read())
@@ -147,9 +146,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.stop()
             extract_audio_fast(v_input, a_extracted)
 
-        # --- [အဆင့် ၂/၆] AI Script & Tags ---
-        with st.spinner(f"⏳ [အဆင့်၂/၆] {ai_provider} ဖြင့် ဇာတ်ညွှန်း၊ Title နှင့် Thumbnail ထုတ်လုပ်နေပါသည်..."):
-            pbar.progress(30, text=f"🤖 [အဆင့် ၂/၆] ဇာတ်ညွှန်း၊ Title နှင့် Hashtagsဖန်တီးနေပါသည်...")
+        # --- [အဆင့် ၂/၇] AI Script & Tags (Golden Rule: Pure Text Output) ---
+        with st.spinner(f"⏳ [အဆင့်၂/၇] {ai_provider} ဖြင့် ဇာတ်ညွှန်းနှင့် Title ထုတ်လုပ်နေပါသည်..."):
+            pbar.progress(30, text=f"🤖 [အဆင့် ၂/၇] ဇာတ်ညွှန်း၊ Title နှင့် Hashtags ဖန်တီးနေပါသည်...")
             try:
                 extra_rules = ""
                 if script_hook: extra_rules += " [HOOK]: Start with an extremely engaging 3-second viral hook."
@@ -173,7 +172,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             media_file = client.files.upload(file=target_file)
                             while "PROCESSING" in str(client.files.get(name=media_file.name).state): time.sleep(2)
                             
-                            # 🔴 GOLDEN RULE UPDATE: No More SRT Timestamps Generation from Gemini
+                            # 🔴 GOLDEN RULE: Output Pure Text instead of SRT
                             gemini_prompt = f"Watch the provided video carefully. Invent a completely ORIGINAL, highly engaging storytelling recap in Burmese. Do NOT just translate. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output pure text narrative. {extra_rules}" if "Original" in recap_mode else f"Listen to the audio. Translate and adapt the text into highly engaging, natural spoken Burmese. STRICT RULES: 1. Include Synergy Audio Tags like [pause=1.0], [excited]. 2. NO ENGLISH TRANSLITERATION. 3. Output pure text narrative. {extra_rules}"
                             
                             response = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, gemini_prompt])
@@ -192,7 +191,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         openai.api_key = api_key_input
                         with open(a_extracted, "rb") as file: tsrt = openai.audio.translations.create(model="whisper-1", file=file, response_format="srt")
 
-                    base_prompt = f"Translate and adapt the text into engaging Burmese. Add audio tags. Output pure text narrative. {extra_rules}"
+                    base_prompt = f"Translate and adapt the English text into engaging Burmese. Add audio tags. Output pure text narrative. {extra_rules}"
                     comp = client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else ("gpt-5.5-pro" if "5.5" in ai_provider else "gpt-4o"), messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
                     raw_output_text = comp.choices[0].message.content
 
@@ -204,37 +203,16 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
                 clean_raw_text = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
                 st.session_state.generated_script = clean_raw_text
-
-                # Thumbnail generation block
-                try:
-                    t_A = min(get_file_duration(v_input)*0.2, 10)
-                    t_B = min(get_file_duration(v_input)*0.5, 20)
-                    for thumb_suffix, t_val in [("A", t_A), ("B", t_B)]:
-                        thumb_name = f"thumb_{thumb_suffix}_{run_id}.jpg"
-                        try:
-                            stream = ffmpeg.input(v_input, ss=t_val)
-                            if cb_thumb_text:
-                                wrapped_lines = textwrap.wrap(st.session_state.viral_title, width=25)
-                                max_l = max(len(l) for l in wrapped_lines) if wrapped_lines else 0
-                                c_text = "\n".join(l.center(max_l, " ") for l in wrapped_lines)
-                                with open("thumb_text.txt", "w", encoding="utf-8") as tf: tf.write(c_text)
-                                if os.path.exists(selected_font): 
-                                    stream = ffmpeg.filter(stream.video, 'drawtext', textfile='thumb_text.txt', fontfile=selected_font.replace('\\','/'), fontcolor='white', fontsize=65, x='(w-text_w)/2', y='(h-text_h)/2', box=1, boxcolor='red@0.9', boxborderw=20, borderw=3, bordercolor='black', line_spacing=15, text_align='C')
-                            ffmpeg.output(stream, thumb_name, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
-                        except Exception: pass
-                        if thumb_suffix == "A" and os.path.exists(thumb_name): st.session_state.thumb_path_A = thumb_name
-                        elif thumb_suffix == "B" and os.path.exists(thumb_name): st.session_state.thumb_path_B = thumb_name
-                except Exception: pass
             except Exception as e: 
                 st.error(f"Logic Error: {e}")
                 st.stop()
 
-        # --- [အဆင့် ၃/၆] AI Voice Generation ---
-        with st.spinner(f"⏳ [အဆင့်၃/၆] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
-            pbar.progress(50, text="🎙️ [အဆင့် ၃/၆] အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
+        # --- [အဆင့် ၃/၇] AI Voice Generation ---
+        with st.spinner(f"⏳ [အဆင့်၃/၇] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
+            pbar.progress(50, text="🎙️ [အဆင့် ၃/၇] အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
             try: 
                 asyncio.run(generate_tts(
-                    clean_raw_text, voice_char, a_generated, engine=audio_engine_choice, 
+                    st.session_state.generated_script, voice_char, a_generated, engine=audio_engine_choice, 
                     ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, 
                     gemini_key=synergy_key if synergy_key else api_key_input, pitch=pitch_level, voice_fx=fx_level
                 ))
@@ -242,40 +220,34 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"အသံထုတ်လုပ်ခြင်းမအောင်မြင်ပါ: {e}")
                 st.stop()
 
-        # --- [အဆင့် ၄/၆] Whisper Forced Alignment ---
-        with st.spinner("⏳ [အဆင့်၄/၆] Whisper ဖြင့် အသံနှင့် စာတန်းကို တိကျစွာ ချိန်ညှိနေပါသည်..."):
-            pbar.progress(70, text="📝 [အဆင့် ၄/၆] Whisper Word-level Sync ပြုလုပ်နေပါသည်...")
-            try:
-                success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(a_generated, clean_raw_text, groq_key_fc, sub_short)
-                if not success_sync:
-                    st.error(f"❌ Whisper Sync Error: {err_sync}")
-                    st.stop()
-            except Exception as e:
-                st.error(f"❌ Alignment Failed: {e}")
+        # --- [အဆင့် ၄/၇] Whisper Forced Alignment (Groq API) ---
+        with st.spinner("⏳ [အဆင့်၄/၇] Whisper ဖြင့် အသံနှင့် စာတန်းကို တိကျစွာ ချိန်ညှိနေပါသည်..."):
+            pbar.progress(65, text="📝 [အဆင့် ၄/၇] Whisper Word-level Sync ပြုလုပ်နေပါသည်...")
+            groq_key_to_use = load_key(GROQ_KEY_FILE)
+            if not groq_key_to_use: groq_key_to_use = api_key_input # Fallback
+            
+            success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(a_generated, st.session_state.generated_script, groq_key_to_use, sub_short)
+            if not success_sync:
+                st.error(f"❌ Whisper Sync Error: {err_sync}. ကျေးဇူးပြု၍ API Limit သို့မဟုတ် Key မှန်ကန်မှု စစ်ဆေးပါ။")
                 st.stop()
 
-        # --- [အဆင့် ၅/၆] Final Video Merge ---
-        with st.spinner("⏳ [အဆင့်၅/၆] ဗီဒီယိုနှင့် စာတန်းထိုးပေါင်းစပ်နေပါသည်..."):
-            pbar.progress(85, text="🎬 [အဆင့် ၅/၆] Master Video Rendering ပြုလုပ်နေပါသည်...")
-            
-            # 🔴 ARCHITECTURE UPGRADE: Sending VideoConfig object
-            render_cfg = VideoConfig(
-                ratio=video_ratio, use_bypass=cb_bypass, use_blur=cb_blur, watermark=watermark_text, 
-                subtitle_mode=subtitle_mode, use_mirror=cb_mirror, use_color=cb_color, use_grain=cb_grain, 
-                use_fps=cb_fps, sub_position=sub_position, sub_color=sub_color, sub_size=sub_size, 
-                sub_thickness=sub_thickness, sub_bg=sub_bg, use_freeze=cb_freeze, logo_path=uploaded_logo, 
-                font_path=selected_font
+        # --- [အဆင့် ၅/၇] Final Video Merge ---
+        with st.spinner("⏳ [အဆင့်၅/၇] ဗီဒီယိုနှင့် စာတန်းထိုးပေါင်းစပ်နေပါသည်..."):
+            pbar.progress(80, text="🎬 [အဆင့် ၅/၇] ဗီဒီယိုနှင့်စာတန်းထိုး ပေါင်းစပ်နေပါသည်...")
+            success, err_msg = render_premium_saas_video(
+                v_input, a_generated, parsed_timestamps, v_final, video_ratio, 
+                cb_bypass, cb_blur, watermark_text, subtitle_mode, cb_mirror, cb_color, cb_grain, cb_fps, 
+                sub_position=sub_position, sub_color=sub_color, sub_size=sub_size, sub_thickness=sub_thickness, 
+                sub_bg=sub_bg, use_freeze=cb_freeze, logo_path=uploaded_logo, font_path=selected_font
             )
-            
-            success, err_msg = render_premium_saas_video(v_input, a_generated, parsed_timestamps, v_final, render_cfg)
             if not success: 
                 st.error(f"❌ Render Failure: {err_msg}")
                 st.stop()
 
-        # --- [အဆင့် ၆/၆] BGM Mixing ---
+        # --- [အဆင့် ၆/၇] BGM Mixing ---
         if success and selected_bgm not in ["None (BGM မထည့်ပါ)"]:
-            with st.spinner("⏳ [အဆင့်၆/၆] Auto-Ducking ဖြင့် BGM ထပ်မံပေါင်းစပ်နေပါသည်..."):
-                pbar.progress(95, text="🎵 [အဆင့် ၆/၆] Auto-Ducking စနစ်ဖြင့် BGM အသံကစားနေပါသည်...")
+            with st.spinner("⏳ [အဆင့်၆/၇] Auto-Ducking ဖြင့် BGM ထပ်မံပေါင်းစပ်နေပါသည်..."):
+                pbar.progress(90, text="🎵 [အဆင့် ၆/၇] Auto-Ducking စနစ်ဖြင့် BGM အသံကစားနေပါသည်...")
                 selected_bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
                 if os.path.exists(selected_bgm_path):
                     try:
@@ -284,6 +256,28 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         (ffmpeg.output(ffmpeg.input(v_final).video, mixed, "temp_mix.mp4", vcodec='copy', acodec='aac', t=get_file_duration(v_final)).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True))
                         shutil.move("temp_mix.mp4", v_final)
                     except Exception: pass
+
+        # --- [အဆင့် ၇/၇] Thumbnail Generation ---
+        with st.spinner("⏳ [အဆင့်၇/၇] Professional Thumbnails များထုတ်လုပ်နေပါသည်..."):
+            pbar.progress(95, text="🖼️ [အဆင့် ၇/၇] Thumbnail များထုတ်လုပ်နေပါသည်...")
+            try:
+                t_A = min(get_file_duration(v_input)*0.2, 10)
+                t_B = min(get_file_duration(v_input)*0.5, 20)
+                for thumb_suffix, t_val in [("A", t_A), ("B", t_B)]:
+                    thumb_name = f"thumb_{thumb_suffix}_{run_id}.jpg"
+                    try:
+                        if cb_thumb_text:
+                            # 🔴 NEW FIX: UI မှရွေးချယ်ထားသော style ဖြင့် Thumbnail ကိုလှမ်းခေါ်သည်
+                            success_thumb, _ = generate_professional_thumbnail(v_input, thumb_name, st.session_state.viral_title if st.session_state.viral_title else "Viral Video", t_val, style=md_thumb_style, font_path=selected_font)
+                        else:
+                            ffmpeg.input(v_input, ss=t_val).output(thumb_name, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                            success_thumb = os.path.exists(thumb_name)
+
+                        if success_thumb:
+                            if thumb_suffix == "A": st.session_state.thumb_path_A = thumb_name
+                            elif thumb_suffix == "B": st.session_state.thumb_path_B = thumb_name
+                    except Exception: pass
+            except Exception: pass
 
         pbar.progress(100, text="✅ အားလုံးပြီးစီးပါပြီ!")
         if success: 
