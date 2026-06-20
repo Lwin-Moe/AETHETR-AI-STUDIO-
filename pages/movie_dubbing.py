@@ -24,7 +24,6 @@ def tuples_to_srt(parsed_data):
         start = float(start_raw)
         end = float(end_raw)
         
-        # 🔴 SILENCE CLIP ENGINE: စကားမပြောတော့ဘဲ ငြိမ်နေချိန်တွင် စာတန်းထိုးပျောက်သွားစေရန် စာဖတ်နှုန်းဖြင့် ထိန်းချုပ်ခြင်း
         natural_dur = max(1.5, min(3.5, len(text) * 0.12))
         end = min(start + natural_dur, end)
         
@@ -42,6 +41,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
     available_fonts = get_available_fonts()
     
+    # 📌 Initialize Session States
     if "md_step1_done" not in st.session_state: st.session_state.md_step1_done = False
     if "md_generated_srt" not in st.session_state: st.session_state.md_generated_srt = ""
     if "md_generated_script" not in st.session_state: st.session_state.md_generated_script = ""
@@ -167,8 +167,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
                 
                 raw_output_text = ""
+                keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
+                
+                # 🔴 1. MULTI-KEY FALLBACK (SCRIPT GENERATION)
                 if "Gemini" in ai_provider:
-                    keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
                     success_gemini = False; last_err = ""
                     for current_key in keys_list:
                         try:
@@ -180,24 +182,35 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, gemini_prompt])
                             raw_output_text = res.text.strip()
                             client.files.delete(name=media_file.name)
-                            success_gemini = True; break
-                        except Exception as e: last_err = str(e); continue
-                    if not success_gemini: raise Exception(f"Gemini Error: {last_err}")
+                            success_gemini = True
+                            break
+                        except Exception as e:
+                            last_err = str(e)
+                            try: client.files.delete(name=media_file.name)
+                            except: pass
+                            continue
+                    if not success_gemini: raise Exception(f"Gemini API Limit Error on all keys: {last_err}")
                 else:
-                    # 🔴 FIX: Properly initialize OpenAI client to avoid TypeError (unbound method)
-                    client_llm = Groq(api_key=api_key_input) if "Groq" in ai_provider else openai.OpenAI(api_key=api_key_input)
-                    if "Groq" in ai_provider:
-                        with open(a_extracted, "rb") as file: transcription = client_llm.audio.translations.create(file=(a_extracted, file.read()), model="whisper-large-v3", response_format="verbose_json")
-                        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-                        tsrt = "".join([f"{i}\n00:00:00,000 --> 00:00:10,000\n{s['text']}\n\n" for i, s in enumerate(segments, 1)])
-                    else:
-                        with open(a_extracted, "rb") as file: ts_res = client_llm.audio.translations.create(model="whisper-1", file=file, response_format="srt")
-                        tsrt = str(ts_res)
-                        st.session_state.md_original_transcript = tsrt
-                    
-                    base_prompt = f"Translate and adapt the English text into engaging Burmese. Add audio tags. Output pure text narrative. {extra_rules}"
-                    comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
-                    raw_output_text = comp.choices[0].message.content
+                    success_llm = False; last_err = ""
+                    for current_key in keys_list:
+                        try:
+                            client_llm = Groq(api_key=current_key) if "Groq" in ai_provider else openai.OpenAI(api_key=current_key)
+                            if "Groq" in ai_provider:
+                                with open(a_extracted, "rb") as file: transcription = client_llm.audio.translations.create(file=(a_extracted, file.read()), model="whisper-large-v3", response_format="verbose_json")
+                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                                tsrt = "".join([f"{i}\n00:00:00,000 --> 00:00:10,000\n{s['text']}\n\n" for i, s in enumerate(segments, 1)])
+                            else:
+                                with open(a_extracted, "rb") as file: ts_res = client_llm.audio.translations.create(model="whisper-1", file=file, response_format="srt")
+                                tsrt = str(ts_res)
+                                st.session_state.md_original_transcript = tsrt
+                            
+                            base_prompt = f"Translate and adapt the English text into engaging Burmese. Add audio tags. Output pure text narrative. {extra_rules}"
+                            comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
+                            raw_output_text = comp.choices[0].message.content
+                            success_llm = True
+                            break
+                        except Exception as e: last_err = str(e); continue
+                    if not success_llm: raise Exception(f"{ai_provider} Error on all keys: {last_err}")
 
                 title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
                 tags_match = re.search(r'\[TAGS:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
@@ -208,11 +221,21 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             except Exception as e: st.error(f"Logic Error: {e}"); st.stop()
 
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (ဇာတ်လမ်းရှည်ပါက ၂-၃ မိနစ်ခန့် ကြာနိုင်ပါသည်)"):
-            pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည် (အချိန်အနည်းငယ် ယူပါမည်)...")
-            try: 
-                asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=synergy_key if synergy_key else api_key_input, pitch=pitch_level, voice_fx=fx_level))
-                st.session_state.md_audio_dur = get_file_duration(a_generated)
-            except Exception as e: st.error(f"TTS Error: {e}"); st.stop()
+            pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
+            
+            # 🔴 2. MULTI-KEY FALLBACK (SYNERGY/TTS GENERATION)
+            tts_keys = [k.strip() for k in (synergy_key if synergy_key else api_key_input).split(",") if k.strip()]
+            success_tts = False; last_tts_err = ""
+            for current_key in tts_keys:
+                try: 
+                    asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
+                    st.session_state.md_audio_dur = get_file_duration(a_generated)
+                    success_tts = True; break
+                except Exception as e: last_tts_err = str(e); continue
+                
+            if not success_tts:
+                st.error(f"❌ TTS Error on all keys: {last_tts_err}")
+                st.stop()
 
         if subtitle_mode != "No Subtitle":
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (Audio Compressing...)"):
@@ -224,52 +247,58 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 if not os.path.exists(sync_audio_path) or os.path.getsize(sync_audio_path) < 100:
                     sync_audio_path = a_generated
 
-                whisper_key = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
+                whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
+                whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
                 
-                try:
-                    raw_srt = ""
-                    if whisper_key.startswith("gsk_"):
-                        client_audio = Groq(api_key=whisper_key)
-                        with open(sync_audio_path, "rb") as f:
-                            transcription = client_audio.audio.transcriptions.create(
-                                file=(sync_audio_path, f.read()),
-                                model="whisper-large-v3",
-                                response_format="verbose_json"
-                            )
-                        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-                    else:
-                        # 🔴 FIX: Properly initialize OpenAI client to avoid TypeError (unbound method)
-                        client_openai = openai.OpenAI(api_key=whisper_key)
-                        with open(sync_audio_path, "rb") as f:
-                            transcription = client_openai.audio.transcriptions.create(
-                                model="whisper-1", 
-                                file=f, 
-                                response_format="verbose_json"
-                            )
-                        segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                # 🔴 3. MULTI-KEY FALLBACK (WHISPER SYNC)
+                sync_success = False; last_sync_err = ""
+                for w_key in whisper_keys:
+                    try:
+                        raw_srt = ""
+                        if w_key.startswith("gsk_"):
+                            client_audio = Groq(api_key=w_key)
+                            with open(sync_audio_path, "rb") as f:
+                                transcription = client_audio.audio.transcriptions.create(
+                                    file=(sync_audio_path, f.read()),
+                                    model="whisper-large-v3",
+                                    response_format="verbose_json"
+                                )
+                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                        else:
+                            client_openai = openai.OpenAI(api_key=w_key)
+                            with open(sync_audio_path, "rb") as f:
+                                transcription = client_openai.audio.transcriptions.create(
+                                    model="whisper-1", 
+                                    file=f, 
+                                    response_format="verbose_json"
+                                )
+                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
 
-                    for i, segment in enumerate(segments, 1):
-                        start_raw = segment['start'] if isinstance(segment, dict) else segment.start
-                        end_raw = segment['end'] if isinstance(segment, dict) else segment.end
-                        text_raw = segment['text'] if isinstance(segment, dict) else segment.text
-                        
-                        start = float(start_raw)
-                        end = float(end_raw)
-                        text = str(text_raw).strip()
-                        
-                        natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-                        end = min(start + natural_dur, end)
-                        
-                        def format_srt_time(seconds):
-                            sec = float(seconds)
-                            h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-                            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                        
-                        raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
-                        
-                    st.session_state.md_generated_srt = raw_srt.strip()
-                except Exception as e:
-                    st.error(f"❌ Whisper API Error: {e}")
+                        for i, segment in enumerate(segments, 1):
+                            start_raw = segment['start'] if isinstance(segment, dict) else segment.start
+                            end_raw = segment['end'] if isinstance(segment, dict) else segment.end
+                            text_raw = segment['text'] if isinstance(segment, dict) else segment.text
+                            
+                            start = float(start_raw)
+                            end = float(end_raw)
+                            text = str(text_raw).strip()
+                            
+                            natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+                            end = min(start + natural_dur, end)
+                            
+                            def format_srt_time(seconds):
+                                sec = float(seconds)
+                                h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
+                                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                            
+                            raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
+                            
+                        st.session_state.md_generated_srt = raw_srt.strip()
+                        sync_success = True; break
+                    except Exception as e: last_sync_err = str(e); continue
+                
+                if not sync_success:
+                    st.error(f"❌ Whisper Sync Error on all keys: {last_sync_err}")
                     st.stop()
         else: pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
 
