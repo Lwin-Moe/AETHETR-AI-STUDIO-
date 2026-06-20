@@ -183,7 +183,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             client.files.delete(name=media_file.name)
                             success_gemini = True
                             break
-                        except Exception as e:
+                        except BaseException as e:
                             last_err = str(e)
                             try: client.files.delete(name=media_file.name)
                             except: pass
@@ -208,7 +208,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             raw_output_text = comp.choices[0].message.content
                             success_llm = True
                             break
-                        except Exception as e: last_err = str(e); continue
+                        except BaseException as e: 
+                            last_err = str(e)
+                            continue
                     if not success_llm: raise Exception(f"{ai_provider} Error on all keys: {last_err}")
 
                 title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
@@ -226,32 +228,35 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             success_tts = False
             last_tts_err = ""
             
-            orig_error = st.error
-            orig_stop = st.stop
-            
-            def mock_error(*args, **kwargs): pass
-            def mock_stop(*args, **kwargs): raise RuntimeError("MOCKED_STOP_EXCEPTION")
-            
-            try:
-                st.error = mock_error
-                st.stop = mock_stop
-                
-                for current_key in tts_keys:
-                    try: 
-                        if os.path.exists(a_generated): os.remove(a_generated)
-                        asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
-                        
-                        if os.path.exists(a_generated) and os.path.getsize(a_generated) > 1000:
-                            st.session_state.md_audio_dur = get_file_duration(a_generated)
-                            success_tts = True
-                            break
-                    except BaseException as e: 
-                        last_tts_err = str(e)
-                        continue
-            finally:
-                st.error = orig_error
-                st.stop = orig_stop
-                
+            for current_key in tts_keys:
+                # 🔴 ULTIMATE CRASH CATCHER: BaseException ကို အသုံးပြု၍ Error တိုင်းကို ဖမ်းယူခြင်း
+                try: 
+                    if os.path.exists(a_generated): os.remove(a_generated)
+                    asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
+                    
+                    # 🔴 BULLETPROOF AUDIO VERIFICATION: Error JSON ဖိုင်များကို အသံဖိုင်အဖြစ် အထင်မှားမှုအား ကာကွယ်ခြင်း
+                    valid_audio = False
+                    if os.path.exists(a_generated) and os.path.getsize(a_generated) > 2000:
+                        try:
+                            # FFprobe ကိုသာ အသုံးပြု၍ တကယ့်အသံဖိုင် ဟုတ်မဟုတ်ကို အတိအကျ စစ်ဆေးပါသည်
+                            ffprobe_bin = FFMPEG_BINARY.replace("ffmpeg", "ffprobe")
+                            cmd = [ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", a_generated]
+                            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                            dur_val = float(res.stdout.strip())
+                            if dur_val > 0.5:
+                                st.session_state.md_audio_dur = float(dur_val)
+                                valid_audio = True
+                        except BaseException: pass # တွက်မရလျှင် Error မတက်ဘဲ valid_audio=False အတိုင်းသာ ထားမည်
+                    
+                    if valid_audio:
+                        success_tts = True
+                        break
+                    else:
+                        raise RuntimeError("API returned invalid audio or JSON error.")
+                except BaseException as e: 
+                    last_tts_err = str(e)
+                    continue # နောက် Key တစ်ခုသို့ အလိုအလျောက် တိတ်တဆိတ် ကူးပြောင်းမည်
+                    
             if not success_tts:
                 st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
@@ -260,7 +265,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                # 🔴 UNIVERSAL AAC COMPRESSION FIX: FFmpeg အလုပ်မလုပ်သော MP3 အစား M4A ကို အသုံးပြု၍ ဖိုင်ဆိုဒ်အား အသေသေးဆုံး ချုံ့ပစ်ခြင်း
                 sync_audio_path = "md_sync_compressed.m4a"
                 subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "aac", "-b:a", "32k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
                 
@@ -270,12 +274,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
                 whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
                 
-                sync_success = False
-                last_sync_err = ""
+                sync_success = False; last_sync_err = ""
                 
-                # 🔴 500 SERVER ERROR AUTO-RETRY ENGINE
                 for w_key in whisper_keys:
-                    for attempt in range(3): # Error 500 တက်ပါက ၃ ကြိမ်တိတိ ပြန်ကြိုးစားမည်
+                    for attempt in range(3):
                         try:
                             raw_srt = ""
                             if w_key.startswith("gsk_"):
@@ -318,18 +320,15 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 
                             st.session_state.md_generated_srt = raw_srt.strip()
                             sync_success = True
-                            break # Attempt loop ထဲမှ ထွက်မည်
-                        except Exception as e: 
+                            break
+                        except BaseException as e: 
                             last_sync_err = str(e)
-                            # Server down Error (500, 502, 503) များအတွက်သာ ပြန်လည်ကြိုးစားမည်
                             if "500" in last_sync_err or "502" in last_sync_err or "503" in last_sync_err:
-                                time.sleep(3) # ၃ စက္ကန့်နားပြီး ပြန်ကြိုးစားမည်
+                                time.sleep(3)
                                 continue
                             else:
-                                break # အခြား Key မှားသော Error များအတွက် နောက် Key တစ်ခုသို့ တန်းပြောင်းမည်
-                    
-                    if sync_success:
-                        break # Key loop ထဲမှ အပြီးထွက်မည်
+                                break
+                    if sync_success: break
                 
                 if not sync_success:
                     st.error(f"❌ Whisper Sync Error on all keys: {last_sync_err}")
@@ -401,7 +400,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
-                    # --- Custom FFmpeg Pipeline for Dubbing ---
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
@@ -422,13 +420,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
                     if cb_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
                     
-                    # 🔴 SUPER STABLE BLUR ENGINE
                     if md_blur and blur_w > 0 and blur_h > 0:
                         ff_x, ff_y = int(max(0, min(blur_x, v_w - 1))), int(max(0, min(blur_y, v_h - 1)))
                         ff_w, ff_h = int(max(10, min(blur_w, v_w - ff_x))), int(max(10, min(blur_h, v_h - ff_y)))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
-                    # Subtitles Rendering
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = selected_font.replace('\\', '/')
@@ -451,7 +447,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
                     ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                     
-                    # --- BGM Mixing (Auto-Ducking) ---
                     if selected_bgm not in ["None (BGM မထည့်ပါ)"]:
                         st.info("🎵 Applying Cinematic Auto-Ducking BGM...")
                         bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
@@ -462,7 +457,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         else: shutil.move("temp_dubbed.mp4", v_final)
                     else: shutil.move("temp_dubbed.mp4", v_final)
 
-                    # Thumbnails
                     try:
                         for tsuffix, t_val in [("A", min(st.session_state.md_audio_dur*0.2, 10)), ("B", min(st.session_state.md_audio_dur*0.5, 20))]:
                             tname = f"thumb_{tsuffix}_{st.session_state.md_run_id}.jpg"
