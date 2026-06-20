@@ -13,7 +13,6 @@ if shutil.which("ffmpeg"):
 else:
     FFMPEG_BINARY = imageio_ffmpeg.get_ffmpeg_exe()
 
-# --- ARCHITECTURE UPGRADE: Configuration Object ---
 @dataclass
 class VideoConfig:
     ratio: str
@@ -33,6 +32,8 @@ class VideoConfig:
     use_freeze: bool = False
     logo_path: str = None
     font_path: str = "Padauk.ttf"
+    use_sfx: bool = False             # 🔴 Auto-SFX Engine
+    transition_interval: float = 0.0  # 🔴 When to apply Whoosh SFX
 
 def get_file_duration(file_path):
     try:
@@ -67,48 +68,6 @@ def extract_audio_fast(video_in, audio_out="temp_extracted.mp3"):
         if os.path.exists(audio_out): return audio_out
     except Exception: pass
     return None
-
-def add_tiktok_hook_overlay(video_input, output_path, hook_text, niche="💡 Fun Facts / Trivia", duration=3.5, font_path="Padauk.ttf"):
-    try:
-        video = ffmpeg.input(video_input).video
-        audio = ffmpeg.input(video_input).audio
-        hook_styles = {
-            "👻 Horror / Creepypasta": {"text_color": "red", "bg_color": "black@0.8", "font_size": 55},
-            "🚀 Motivation / Mindset": {"text_color": "gold", "bg_color": "black@0.6", "font_size": 50},
-            "💡 Fun Facts / Trivia": {"text_color": "cyan", "bg_color": "black@0.7", "font_size": 45},
-            "🧠 Dark Psychology": {"text_color": "white", "bg_color": "black@0.9", "font_size": 50},
-            "📜 Ancient History / Myths": {"text_color": "gold", "bg_color": "black@0.7", "font_size": 48}
-        }
-        style = hook_styles.get(niche, hook_styles["💡 Fun Facts / Trivia"])
-        wrapped_hook = textwrap.wrap(hook_text, width=20)
-        if not wrapped_hook: wrapped_hook = [hook_text]
-        max_len = max(len(line) for line in wrapped_hook)
-        centered_hook = "\n".join(line.center(max_len, " ") for line in wrapped_hook)
-        
-        with open("hook_text.txt", "w", encoding="utf-8") as f: f.write(centered_hook)
-            
-        video = ffmpeg.filter(video, 'drawbox', x=0, y='h*0.3', w='iw', h='h*0.4', color=style["bg_color"], thickness='fill', enable=f'between(t,0,{duration})')
-        video = ffmpeg.filter(video, 'drawtext', textfile='hook_text.txt', fontfile=font_path.replace('\\', '/'), fontsize=style["font_size"], fontcolor=style["text_color"], bordercolor='black', borderw=3, x='(w-text_w)/2', y='(h-text_h)/2', line_spacing=15, text_align='C', enable=f'between(t,0,{duration})')
-        
-        if niche == "👻 Horror / Creepypasta":
-            video = ffmpeg.filter(video, 'drawbox', x=0, y='h*0.28', w='iw', h='4', color='red@0.9', thickness='fill', enable=f'between(t,0,{duration})')
-            video = ffmpeg.filter(video, 'drawbox', x=0, y='h*0.72', w='iw', h='4', color='red@0.9', thickness='fill', enable=f'between(t,0,{duration})')
-            
-        out = ffmpeg.output(video, audio, output_path, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', audio_bitrate='128k', preset='superfast')
-        out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
-        return output_path
-    except Exception: return video_input
-
-def add_tiktok_loop_point(video_input, output_path, font_path="Padauk.ttf"):
-    try:
-        dur = get_file_duration(video_input)
-        video = ffmpeg.input(video_input).video
-        audio = ffmpeg.input(video_input).audio
-        video = ffmpeg.filter(video, 'drawtext', text='👆 ပြန်ကြည့်ပါ', fontfile=font_path.replace('\\', '/'), fontsize=35, fontcolor='white', bordercolor='black', borderw=2, x='(w-text_w)/2', y='(h-text_h)/2', enable=f'between(t,{dur-2},{dur})')
-        out = ffmpeg.output(video, audio, output_path, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', audio_bitrate='128k', preset='superfast')
-        out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
-        return output_path
-    except Exception: return video_input
 
 THUMBNAIL_STYLES = {
     "🔥 Viral TikTok Style": {"text_position": "center", "font_size_range": (50, 90), "bg_overlay": "gradient_bottom", "text_effect": "stroke_bold", "color_scheme": "yellow_red"},
@@ -173,7 +132,6 @@ def generate_professional_thumbnail(video_input, output_path, title_text, timest
         return True, output_path
     except Exception as e: return False, str(e)
 
-# --- REFACTORED MAIN RENDER FUNCTION ---
 def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, config: VideoConfig):
     try:
         a_dur = get_file_duration(in_a)
@@ -189,6 +147,29 @@ def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, config: Vide
         if config.use_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
 
         audio = ffmpeg.input(in_a).audio
+        
+        # 🔴 PRO FEATURE 3: Auto-SFX Engine (Merge Impacts and Whooshes)
+        if config.use_sfx and config.transition_interval > 0:
+            impact_path = os.path.join("sfx", "impact.mp3")
+            whoosh_path = os.path.join("sfx", "whoosh.mp3")
+            
+            mix_inputs = [audio]
+            # ဗီဒီယိုအစတွင် Impact အသံထည့်ခြင်း
+            if os.path.exists(impact_path):
+                impact_audio = ffmpeg.input(impact_path).audio.filter('volume', 0.8)
+                mix_inputs.append(impact_audio)
+                
+            # ပုံပြောင်းသည့် နေရာများတွင် Whoosh (လေခွင်းသံ) ထည့်ခြင်း
+            if os.path.exists(whoosh_path):
+                num_transitions = int(a_dur // config.transition_interval)
+                for i in range(1, num_transitions):
+                    delay_ms = int(i * config.transition_interval * 1000)
+                    whoosh_audio = ffmpeg.input(whoosh_path).audio.filter('adelay', f'{delay_ms}|{delay_ms}').filter('volume', 0.5)
+                    mix_inputs.append(whoosh_audio)
+                    
+            if len(mix_inputs) > 1:
+                audio = ffmpeg.filter(mix_inputs, 'amix', inputs=len(mix_inputs), duration='first', normalize=0)
+
         if config.use_blur: video = ffmpeg.filter(video, 'drawbox', x=0, y='ih-90', w='iw', h=90, color='black@0.95', thickness='fill')
         if config.watermark: video = ffmpeg.filter(video, 'drawtext', text=config.watermark, x='w-tw-15', y='15', fontsize=30, fontcolor='white@0.5')
 
