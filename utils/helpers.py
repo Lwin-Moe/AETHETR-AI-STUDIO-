@@ -1,13 +1,11 @@
 import os
 import base64
 import urllib.request
+from dotenv import load_dotenv, set_key
 
-# --- Key Save Files Constants ---
-API_KEY_FILE = "saved_api_key.txt"
-ELEVEN_KEY_FILE = "saved_eleven_key.txt"
-GROQ_KEY_FILE = "saved_groq_key.txt"
-OPENAI_KEY_FILE = "saved_openai_key.txt"
-ELEVEN_VOICE_ID_FILE = "saved_eleven_voice_id.txt"
+# --- SECURITY UPGRADE: Environment Variables (.env) ---
+ENV_FILE = ".env"
+load_dotenv(ENV_FILE)
 
 def download_default_font():
     """Default Font ဖြစ်သော Padauk.ttf မရှိပါက ဒေါင်းလုဒ်ဆွဲပေးမည်"""
@@ -28,15 +26,16 @@ def get_available_fonts():
                 font_list.append(os.path.join("font", f))
     return list(set(font_list))
 
-def load_key(file_path):
-    if os.path.exists(file_path):
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read().strip()
-    return ""
+def load_key(key_name):
+    """.env မှ Key ကို လုံခြုံစွာ ခေါ်ယူမည်"""
+    return os.getenv(key_name, "")
 
-def save_key(file_path, key):
-    with open(file_path, "w", encoding="utf-8") as f:
-        f.write(key)
+def save_key(key_name, key_value):
+    """.env ထဲသို့ လုံခြုံစွာ သိမ်းဆည်းမည်"""
+    if not os.path.exists(ENV_FILE):
+        open(ENV_FILE, 'w').close()
+    set_key(ENV_FILE, key_name, key_value)
+    os.environ[key_name] = key_value
 
 def get_download_link(file_path, file_name, link_text):
     if not os.path.exists(file_path):
@@ -48,7 +47,7 @@ def get_download_link(file_path, file_name, link_text):
 def cleanup_temp_files():
     """Rendering ပြီးတိုင်း မလိုအပ်သော ဖိုင်အကြွင်းအကျန်များကို ဖျက်ပစ်မည်"""
     for f in os.listdir("."):
-        if f.startswith(("fc_clip_", "fc_img_", "raw_fc_clip_", "temp_", "subtitles.", "thumb_", "FACELESS_FINAL_", "AETHER_RECAP_FINAL_", "fc_audio.wav", "fc_video_loop.mp4", "hook_text.txt", "thumb_pro_text.txt", "thumb_text.txt")):
+        if f.startswith(("fc_clip_", "fc_img_", "raw_fc_clip_", "temp_", "subtitles.", "thumb_", "FACELESS_FINAL_", "AETHER_RECAP_FINAL_", "fc_audio.wav", "fc_video_loop.mp4", "hook_text.txt", "thumb_pro_text.txt", "thumb_text.txt", "audio_concat.txt")):
             try:
                 os.remove(f)
             except Exception:
