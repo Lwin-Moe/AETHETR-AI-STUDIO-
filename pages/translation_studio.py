@@ -119,15 +119,23 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         pbar.progress(30, text="📝 မူရင်းဘာသာစကားကို နားထောင်နေပါသည်...")
         try:
             whisper_key = groq_key_fc if groq_key_fc else (load_key("GROQ_API_KEY") or api_key_input)
-            client_audio = Groq(api_key=whisper_key) if "Groq" in ai_provider else openai
-            if "Groq" in ai_provider:
-                with open(a_out, "rb") as f: transcript = client_audio.audio.transcriptions.create(file=(a_out, f.read()), model="whisper-large-v3", response_format="srt")
+            
+            # 🔴 BUG FIX: Key ၏ အစစာလုံးကို ကြည့်ပြီး သက်ဆိုင်ရာ Server သို့ အလိုအလျောက် ပို့ပေးမည်
+            if whisper_key.startswith("gsk_"):
+                # "gsk_" ဖြင့်စပါက Main AI ဘာရွေးထားသည်ဖြစ်စေ Groq Whisper ဆီသို့သာ ပို့မည်
+                client_audio = Groq(api_key=whisper_key)
+                with open(a_out, "rb") as f: 
+                    transcript = client_audio.audio.transcriptions.create(file=(a_out, f.read()), model="whisper-large-v3", response_format="srt")
             else:
+                # မဟုတ်ပါက OpenAI သို့ ပို့မည်
                 openai.api_key = whisper_key
-                with open(a_out, "rb") as f: transcript = openai.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt")
+                with open(a_out, "rb") as f: 
+                    transcript = openai.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt")
             
             st.session_state.ts_original_srt = str(transcript)
-        except Exception as e: st.error(f"Whisper Error: {e}"); st.stop()
+        except Exception as e: 
+            st.error(f"Whisper Error: {e}")
+            st.stop()
 
         # 3. LLM Translation
         pbar.progress(50, text=f"🌍 {target_lang} သို့ ဘာသာပြန်နေပါသည်...")
