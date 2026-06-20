@@ -115,25 +115,53 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             extract_audio_fast(v_input, a_out)
         except Exception as e: st.error(str(e)); st.stop()
 
-        # 2. Transcription (Whisper API via Groq/OpenAI for speed & accuracy)
+  # --- [အဆင့် ၂] Transcription အပိုင်း (Groq 400 Error Fix) ---
         pbar.progress(30, text="📝 မူရင်းဘာသာစကားကို နားထောင်နေပါသည်...")
         try:
             whisper_key = groq_key_fc if groq_key_fc else (load_key("GROQ_API_KEY") or api_key_input)
             
-            # 🔴 BUG FIX: Key ၏ အစစာလုံးကို ကြည့်ပြီး သက်ဆိုင်ရာ Server သို့ အလိုအလျောက် ပို့ပေးမည်
             if whisper_key.startswith("gsk_"):
-                # "gsk_" ဖြင့်စပါက Main AI ဘာရွေးထားသည်ဖြစ်စေ Groq Whisper ဆီသို့သာ ပို့မည်
                 client_audio = Groq(api_key=whisper_key)
-                with open(a_out, "rb") as f: 
-                    transcript = client_audio.audio.transcriptions.create(file=(a_out, f.read()), model="whisper-large-v3", response_format="srt")
+                with open(a_out, "rb") as f:
+                    # 🔴 FIX: srt အစား verbose_json ဖြင့် တောင်းဆိုပါမည်
+                    transcription = client_audio.audio.transcriptions.create(
+                        file=(a_out, f.read()),
+                        model="whisper-large-v3",
+                        response_format="verbose_json"
+                    )
+                
+                # 🔴 JSON မှ SRT သို့ ကိုယ်တိုင်ပြောင်းလဲခြင်း
+                raw_srt = ""
+                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                
+                for i, segment in enumerate(segments, 1):
+                    start = segment['start'] if isinstance(segment, dict) else segment.start
+                    end = segment['end'] if isinstance(segment, dict) else segment.end
+                    text = segment['text'] if isinstance(segment, dict) else segment.text
+                    
+                    def format_srt_time(seconds):
+                        h = int(seconds // 3600)
+                        m = int((seconds % 3600) // 60)
+                        s = int(seconds % 60)
+                        ms = int((seconds % 1) * 1000)
+                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                    
+                    raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text.strip()}\n\n"
+                
+                st.session_state.ts_original_srt = raw_srt
+                
             else:
-                # မဟုတ်ပါက OpenAI သို့ ပို့မည်
+                # OpenAI Whisper က srt ကို တိုက်ရိုက် Support ပေးပါသည်
                 openai.api_key = whisper_key
-                with open(a_out, "rb") as f: 
-                    transcript = openai.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt")
+                with open(a_out, "rb") as f:
+                    transcript = openai.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=f,
+                        response_format="srt"
+                    )
+                st.session_state.ts_original_srt = str(transcript)
             
-            st.session_state.ts_original_srt = str(transcript)
-        except Exception as e: 
+        except Exception as e:
             st.error(f"Whisper Error: {e}")
             st.stop()
 
