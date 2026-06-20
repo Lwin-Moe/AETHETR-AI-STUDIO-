@@ -14,8 +14,28 @@ import openai
 
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import parse_and_save_real_srt
+from core_engines.subtitle_sync import generate_whisper_sync_srt, parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
+
+def tuples_to_srt(parsed_data):
+    """Whisper မှထွက်လာသော ဒေတာများကို Editor တွင်ပြင်နိုင်ရန် SRT String သို့ပြောင်းပေးသည့်စနစ်"""
+    srt_str = ""
+    for i, (start_raw, end_raw, text) in enumerate(parsed_data, 1):
+        # 🔴 TYPE ERROR FIX: အချိန်များကို ဂဏန်း (Float) အဖြစ် အတိအကျ ပြောင်းလဲခြင်း
+        start = float(start_raw)
+        end = float(end_raw)
+        
+        # 🔴 SILENCE CLIP ENGINE
+        natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+        end = min(start + natural_dur, end)
+        
+        def format_srt_time(seconds):
+            sec = float(seconds)
+            h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
+            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+            
+        srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{str(text).strip()}\n\n"
+    return srt_str.strip()
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -196,14 +216,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             except Exception as e: st.error(f"TTS Error: {e}"); st.stop()
 
         if subtitle_mode != "No Subtitle":
-            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
+            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (Audio Compressing...)"):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                # 🔴 500 ERROR FIX: Groq 25MB Limit ကို ကျော်ဖြတ်ရန် အရည်အသွေးမကျစေဘဲ 32kbps MP3 အဖြစ် အလိုအလျောက်ချုံ့ခြင်း
                 sync_audio_path = "md_sync_compressed.mp3"
                 subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "libmp3lame", "-ab", "32k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
                 
-                # File Size စစ်ဆေးခြင်း (FFmpeg error တက်သွားပါက မူရင်းဖိုင်ကိုသာ ပြန်သုံးမည်)
                 if not os.path.exists(sync_audio_path) or os.path.getsize(sync_audio_path) < 100:
                     sync_audio_path = a_generated
 
@@ -211,7 +229,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 
                 try:
                     raw_srt = ""
-                    # 🔴 DIRECT API CALL: ပြဿနာတက်သော External Library ကိုဖြုတ်၍ Groq/OpenAI ထံ တိုက်ရိုက်ချိတ်ဆက်ခြင်း
                     if whisper_key.startswith("gsk_"):
                         client_audio = Groq(api_key=whisper_key)
                         with open(sync_audio_path, "rb") as f:
@@ -231,20 +248,26 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             )
                         segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
 
-                    # 🔴 SILENCE CLIP ENGINE: စကားမပြောဘဲ ငြိမ်နေချိန် စာတန်းထိုးပျောက်စေရန် ဤနေရာတွင် တစ်ပါတည်း တွက်ချက်သည်
                     for i, segment in enumerate(segments, 1):
-                        start = segment['start'] if isinstance(segment, dict) else segment.start
-                        end = segment['end'] if isinstance(segment, dict) else segment.end
-                        text = segment['text'] if isinstance(segment, dict) else segment.text
+                        # 🔴 TYPE ERROR FIX: Start နှင့် End များကို Float အဖြစ် အတင်းပြောင်းလဲခြင်း
+                        start_raw = segment['start'] if isinstance(segment, dict) else segment.start
+                        end_raw = segment['end'] if isinstance(segment, dict) else segment.end
+                        text_raw = segment['text'] if isinstance(segment, dict) else segment.text
                         
+                        start = float(start_raw)
+                        end = float(end_raw)
+                        text = str(text_raw).strip()
+                        
+                        # SILENCE CLIP ENGINE
                         natural_dur = max(1.5, min(3.5, len(text) * 0.12))
                         end = min(start + natural_dur, end)
                         
                         def format_srt_time(seconds):
-                            h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds % 1) * 1000)
+                            sec = float(seconds)
+                            h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
                             return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
                         
-                        raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text.strip()}\n\n"
+                        raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
                         
                     st.session_state.md_generated_srt = raw_srt.strip()
                 except Exception as e:
