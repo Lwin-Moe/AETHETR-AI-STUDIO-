@@ -226,7 +226,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             success_tts = False
             last_tts_err = ""
             
-            # 🔴 THE BULLETPROOF FIX (MONKEY PATCH): Intercept st.stop() to prevent streamtlit crash
             orig_error = st.error
             orig_stop = st.stop
             
@@ -234,7 +233,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             def mock_stop(*args, **kwargs): raise RuntimeError("MOCKED_STOP_EXCEPTION")
             
             try:
-                # Override globally so external file's st.stop() gets caught
                 st.error = mock_error
                 st.stop = mock_stop
                 
@@ -243,17 +241,14 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         if os.path.exists(a_generated): os.remove(a_generated)
                         asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
                         
-                        # 1KB ထက်ကြီးသော အသံဖိုင်ထွက်လာမှသာ အောင်မြင်သည်ဟု ယူဆမည်
                         if os.path.exists(a_generated) and os.path.getsize(a_generated) > 1000:
                             st.session_state.md_audio_dur = get_file_duration(a_generated)
                             success_tts = True
                             break
                     except BaseException as e: 
-                        # BaseException သည် Runtime/StopException များကိုပါ ဖမ်းပေးပါသည်
                         last_tts_err = str(e)
                         continue
             finally:
-                # 🔴 Restore Streamlit Functions back to normal
                 st.error = orig_error
                 st.stop = orig_stop
                 
@@ -265,8 +260,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                sync_audio_path = "md_sync_compressed.mp3"
-                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "libmp3lame", "-ab", "32k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
+                # 🔴 UNIVERSAL AAC COMPRESSION FIX: FFmpeg အလုပ်မလုပ်သော MP3 အစား M4A ကို အသုံးပြု၍ ဖိုင်ဆိုဒ်အား အသေသေးဆုံး ချုံ့ပစ်ခြင်း
+                sync_audio_path = "md_sync_compressed.m4a"
+                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "aac", "-b:a", "32k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
                 
                 if not os.path.exists(sync_audio_path) or os.path.getsize(sync_audio_path) < 100:
                     sync_audio_path = a_generated
@@ -274,51 +270,66 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
                 whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
                 
-                sync_success = False; last_sync_err = ""
+                sync_success = False
+                last_sync_err = ""
+                
+                # 🔴 500 SERVER ERROR AUTO-RETRY ENGINE
                 for w_key in whisper_keys:
-                    try:
-                        raw_srt = ""
-                        if w_key.startswith("gsk_"):
-                            client_audio = Groq(api_key=w_key)
-                            with open(sync_audio_path, "rb") as f:
-                                transcription = client_audio.audio.transcriptions.create(
-                                    file=(sync_audio_path, f.read()),
-                                    model="whisper-large-v3",
-                                    response_format="verbose_json"
-                                )
-                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-                        else:
-                            client_openai = openai.OpenAI(api_key=w_key)
-                            with open(sync_audio_path, "rb") as f:
-                                transcription = client_openai.audio.transcriptions.create(
-                                    model="whisper-1", 
-                                    file=f, 
-                                    response_format="verbose_json"
-                                )
-                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                    for attempt in range(3): # Error 500 တက်ပါက ၃ ကြိမ်တိတိ ပြန်ကြိုးစားမည်
+                        try:
+                            raw_srt = ""
+                            if w_key.startswith("gsk_"):
+                                client_audio = Groq(api_key=w_key)
+                                with open(sync_audio_path, "rb") as f:
+                                    transcription = client_audio.audio.transcriptions.create(
+                                        file=(sync_audio_path, f.read()),
+                                        model="whisper-large-v3",
+                                        response_format="verbose_json"
+                                    )
+                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                            else:
+                                client_openai = openai.OpenAI(api_key=w_key)
+                                with open(sync_audio_path, "rb") as f:
+                                    transcription = client_openai.audio.transcriptions.create(
+                                        model="whisper-1", 
+                                        file=f, 
+                                        response_format="verbose_json"
+                                    )
+                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
 
-                        for i, segment in enumerate(segments, 1):
-                            start_raw = segment['start'] if isinstance(segment, dict) else segment.start
-                            end_raw = segment['end'] if isinstance(segment, dict) else segment.end
-                            text_raw = segment['text'] if isinstance(segment, dict) else segment.text
-                            
-                            start = float(start_raw)
-                            end = float(end_raw)
-                            text = str(text_raw).strip()
-                            
-                            natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-                            end = min(start + natural_dur, end)
-                            
-                            def format_srt_time(seconds):
-                                sec = float(seconds)
-                                h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-                                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                            
-                            raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
-                            
-                        st.session_state.md_generated_srt = raw_srt.strip()
-                        sync_success = True; break
-                    except Exception as e: last_sync_err = str(e); continue
+                            for i, segment in enumerate(segments, 1):
+                                start_raw = segment['start'] if isinstance(segment, dict) else segment.start
+                                end_raw = segment['end'] if isinstance(segment, dict) else segment.end
+                                text_raw = segment['text'] if isinstance(segment, dict) else segment.text
+                                
+                                start = float(start_raw)
+                                end = float(end_raw)
+                                text = str(text_raw).strip()
+                                
+                                natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+                                end = min(start + natural_dur, end)
+                                
+                                def format_srt_time(seconds):
+                                    sec = float(seconds)
+                                    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
+                                    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                                
+                                raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
+                                
+                            st.session_state.md_generated_srt = raw_srt.strip()
+                            sync_success = True
+                            break # Attempt loop ထဲမှ ထွက်မည်
+                        except Exception as e: 
+                            last_sync_err = str(e)
+                            # Server down Error (500, 502, 503) များအတွက်သာ ပြန်လည်ကြိုးစားမည်
+                            if "500" in last_sync_err or "502" in last_sync_err or "503" in last_sync_err:
+                                time.sleep(3) # ၃ စက္ကန့်နားပြီး ပြန်ကြိုးစားမည်
+                                continue
+                            else:
+                                break # အခြား Key မှားသော Error များအတွက် နောက် Key တစ်ခုသို့ တန်းပြောင်းမည်
+                    
+                    if sync_success:
+                        break # Key loop ထဲမှ အပြီးထွက်မည်
                 
                 if not sync_success:
                     st.error(f"❌ Whisper Sync Error on all keys: {last_sync_err}")
@@ -390,6 +401,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
+                    # --- Custom FFmpeg Pipeline for Dubbing ---
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
@@ -410,11 +422,13 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
                     if cb_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
                     
+                    # 🔴 SUPER STABLE BLUR ENGINE
                     if md_blur and blur_w > 0 and blur_h > 0:
                         ff_x, ff_y = int(max(0, min(blur_x, v_w - 1))), int(max(0, min(blur_y, v_h - 1)))
                         ff_w, ff_h = int(max(10, min(blur_w, v_w - ff_x))), int(max(10, min(blur_h, v_h - ff_y)))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
+                    # Subtitles Rendering
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = selected_font.replace('\\', '/')
