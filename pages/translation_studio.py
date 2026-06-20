@@ -34,7 +34,6 @@ def sanitize_and_split_srt(raw_srt, max_chars=40, video_dur=600.0):
         s, ms = int(secs % 60), int((secs % 1) * 1000)
         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-    # 1. ပထမဆင့်: စာသားနှင့် အချိန်များကို Clean ဖြစ်အောင် ဖတ်ယူခြင်း
     for b in blocks:
         lines = [l.strip() for l in b.split('\n') if l.strip()]
         if len(lines) >= 3:
@@ -45,7 +44,6 @@ def sanitize_and_split_srt(raw_srt, max_chars=40, video_dur=600.0):
                 txt = " ".join(lines[2:])
                 parsed_items.append({"start": start_s, "end": end_s, "text": txt})
 
-    # 2. ဒုတိယဆင့်: ခွဲခြမ်းစိတ်ဖြာပြီး အချိုးကျ ပြန်လည်ဖြတ်တောက်ခြင်း
     new_counter = 1
     sanitized_srt = ""
     
@@ -54,13 +52,10 @@ def sanitize_and_split_srt(raw_srt, max_chars=40, video_dur=600.0):
         end = item["end"]
         text = item["text"]
         
-        # 🔴 TIMESTAMP HALLUCINATION FIX: အချိန်အဆမတန် ခုန်တက်သွားပါက ပျမ်းမျှစာဖတ်နှုန်းဖြင့် ပြန်ညှိခြင်း
         next_start = parsed_items[idx+1]["start"] if idx + 1 < len(parsed_items) else video_dur
-        if end > video_dur or (end - start) > 15.0 or end <= start:
-            estimated_dur = max(2.5, min(7.0, len(text) / 10.0))
-            end = min(start + estimated_dur, next_start - 0.05)
+        if end > video_dur or end <= start:
+            end = min(start + max(2.0, len(text) * 0.1), next_start - 0.05)
             
-        # 🔴 SMART TEXT SPLITTER: စာပိုဒ်ရှည်ကြီးများကို ပုဒ်ဖြတ်ပုဒ်ရပ်ဖြင့် ခွဲထုတ်ခြင်း
         sub_phrases = re.split(r'([။၊?!])', text)
         chunks = []
         current_chunk = ""
@@ -82,13 +77,18 @@ def sanitize_and_split_srt(raw_srt, max_chars=40, video_dur=600.0):
         chunks = [c for c in chunks if len(c.strip()) > 1]
         if not chunks: chunks = [text]
         
-        # 📐 အချိန်ကို စာကြောင်းရေအလိုက် အချိုးကျ (Proportionally) ခွဲဝေပေးခြင်း
         total_dur = end - start
-        time_slice = total_dur / len(chunks)
+        standard_slice = total_dur / len(chunks)
         
         for c_idx, chunk in enumerate(chunks):
-            c_start = start + (c_idx * time_slice)
-            c_end = c_start + time_slice
+            # 🔴 SILENCE CLIP ENGINE: စာလုံးရေအလိုက် စာတန်းပေါ်မည့်ကြာချိန်ကို တွက်ချက်ခြင်း (စကားပြောပြီးလျှင် အလိုလိုပျောက်စေရန်)
+            natural_dur = max(1.5, min(3.2, len(chunk) * 0.11))
+            
+            c_start = start + (c_idx * standard_slice)
+            # အချိန်အလွတ်ကြီးများထဲအထိ စာတန်းထိုး ဆွဲမဆန့်သွားအောင် Cap ပေးခြင်း
+            c_end = min(c_start + natural_dur, c_start + standard_slice)
+            c_end = min(c_end, end)
+            
             sanitized_srt += f"{new_counter}\n{to_srt_time(c_start)} --> {to_srt_time(c_end)}\n{chunk}\n\n"
             new_counter += 1
             
@@ -112,18 +112,19 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
     available_fonts = get_available_fonts()
     
+    # 📌 Initialize Session States
     if "ts_step1_done" not in st.session_state: st.session_state.ts_step1_done = False
     if "ts_original_srt" not in st.session_state: st.session_state.ts_original_srt = ""
     if "ts_translated_srt" not in st.session_state: st.session_state.ts_translated_srt = ""
     if "ts_viral_title" not in st.session_state: st.session_state.ts_viral_title = ""
     if "ts_bg_image" not in st.session_state: st.session_state.ts_bg_image = None
     if "ts_preview_frame" not in st.session_state: st.session_state.ts_preview_frame = "ts_preview.jpg"
+    if "ts_run_id" not in st.session_state: st.session_state.ts_run_id = str(int(time.time()))
 
     with st.sidebar:
         st.markdown("---")
         st.markdown("<b>🌐 Translation Settings</b>", unsafe_allow_html=True)
         target_lang = st.selectbox("Target Language", ["Myanmar (မြန်မာ)", "English", "Thai (ไทย)", "Indonesian (ไทย)"])
-        
         trans_tone = st.selectbox("🎭 Translation Style (ပြန်ဆိုမှုပုံစံ)", ["Natural & Conversational (သဘာဝကျကျ ဆီလျော်အောင်)", "Gen-Z / Slang (လူငယ်သုံးစကား/အလန်းစား)", "Formal / Direct (တိုက်ရိုက်ပြန်ဆိုချက်)"])
         
         st.markdown("<b>🎥 Copyright Bypass Options</b>", unsafe_allow_html=True)
@@ -152,7 +153,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         st.markdown("<p style='font-weight: bold; color: #38bdf8;'>📺 Media Acquisition</p>", unsafe_allow_html=True)
         video_url = st.text_input("🔗 Video URL (Douyin, Rednote, YT, FB)", placeholder="https://...")
         uploaded_file = st.file_uploader("📥 OR Upload Video (MP4/WEBM)", type=["mp4", "webm", "m4v"])
-        
         st.markdown("<p style='font-weight: bold; color: #10b981; margin-top:15px;'>📖 Custom Dictionary (Optional)</p>", unsafe_allow_html=True)
         custom_dict = st.text_area("အမည်နာမ မှတ်ဉာဏ်များ (ဥပမာ: Naruto=နာရူတို)", placeholder="Gojo=ဂိုဂျို\nOppa=အိုပါး", height=80)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -167,9 +167,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
     st.markdown("---")
 
-    # ==========================================
-    # 🚀 STEP 1: TRANSLATION & ASSET GENERATION
-    # ==========================================
     if st.button("🚀 STEP 1: Generate Translation & Assets"):
         if not api_key_input: st.error("⚠️ API Key လိုအပ်ပါသည်။"); return
         if not uploaded_file and not video_url: st.error("⚠️ Media ထည့်ပေးပါ။"); return
@@ -186,7 +183,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             else: download_video_from_url(video_url, v_input)
             extract_audio_fast(v_input, a_out)
             video_dur = get_file_duration(v_input)
-            
             ffmpeg.input(v_input, ss=min(video_dur/2, 4)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         except Exception as e: st.error(str(e)); st.stop()
 
@@ -238,7 +234,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             2. {tone_instructions}
             3. Do NOT combine multiple small timestamp blocks into one single big paragraph! Keep them independent.
             4. Do NOT add any extra thoughts, translator notes, or side markdown text outside the pure SRT content.{dict_prompt}
-            5. At the absolute end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
+            5. At the very end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
 
             raw_translation = ""
             if "Gemini" in ai_provider:
@@ -252,10 +248,9 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
             t_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_translation, re.IGNORECASE)
             st.session_state.ts_viral_title = re.sub(r'[\[\]]', '', t_match.group(1)).strip() if t_match else "Viral Video"
-            
             dirty_translated_srt = re.sub(r'\[TITLE:.*?\]', '', raw_translation, flags=re.IGNORECASE).strip()
             
-            # 🔴 ဖြတ်တောက်ပြင်ဆင်မည့် Engine အား မီးမောင်းထိုးနှိုးလိုက်ခြင်း
+            # Sanitizer Engine ကို နှိုးပြီး အချိန်ကိုက် ညှိနှိုင်းဖြတ်တောက်ခြင်း
             st.session_state.ts_translated_srt = sanitize_and_split_srt(dirty_translated_srt, max_chars=42, video_dur=video_dur)
             
         except Exception as e: st.error(f"Translation Error: {e}"); st.stop()
@@ -282,14 +277,14 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         pbar.progress(100, text="✅ အဆင့် (၁) ပြီးစီးပါပြီ!")
 
     # ==========================================
-    # 🎬 STEP 2: REVIEW & 4-AXIS BLUR CONFIG
+    # 🎬 STEP 2: REVIEW & FINAL RENDER
     # ==========================================
     if st.session_state.ts_step1_done:
         st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Interactive Customizing</h3>", unsafe_allow_html=True)
         
         col_r1, col_r2 = st.columns(2)
         with col_r1:
-            st.markdown("** 📝 Interactive SRT Editor (စနစ်တကျ ဖြတ်တောက်ပြီးသား စာတန်းထိုးများ)**")
+            st.markdown("**📝 Interactive SRT Editor (စနစ်တကျ ဖြတ်တောက်ပြီးသား စာတန်းထိုးများ)**")
             edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ထပ်မံပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.ts_translated_srt, height=450)
             
         with col_r2:
@@ -306,8 +301,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         img_preview = ImageOps.fit(img_raw, (v_w, v_h), Image.Resampling.LANCZOS)
                     
-                    # Sliders ၄ ခုဖြင့် တရုတ်စာတန်းပေါ် နေရာကွက်တိချိန်ခြင်း
-                    blur_x = st.slider("↔️ Blur X Position (ဘယ်/ညာ ਰွှေ့ရန်)", 0, v_w, 0)
+                    blur_x = st.slider("↔️ Blur X Position (ဘယ်/ညာ ရွှေ့ရန်)", 0, v_w, 0)
                     blur_y = st.slider("↕️ Blur Y Position (အထက်/အောက် ရွှေ့ရန်)", 0, v_h, int(v_h * 0.72))
                     blur_w = st.slider("📐 Blur Width (ဝါးမည့် အကွက်အကျယ်)", 10, v_w, v_w)
                     blur_h = st.slider("📏 Blur Height (ဝါးမည့် အကွက်အမြင့်)", 10, v_h, int(v_h * 0.12))
@@ -337,9 +331,9 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                 st.image(st.session_state.ts_bg_image, caption="AI Generated Background")
 
         if st.button("🎬 RENDER MASTER VIDEO", type="primary"):
-            run_id = str(int(time.time()))
-            v_final = f"TRANSLATED_FINAL_{run_id}.mp4"
-            thumb_final = f"THUMB_FINAL_{run_id}.jpg"
+            st.session_state.ts_run_id = str(int(time.time())) # Session State ထဲတွင် Rerun ခံနိုင်ရန် ထိန်းသိမ်းခြင်း
+            v_final = f"TRANSLATED_FINAL_{st.session_state.ts_run_id}.mp4"
+            thumb_final = f"THUMB_FINAL_{st.session_state.ts_run_id}.jpg"
             st.session_state.final_video_path = v_final
             
             with st.spinner("⏳ Master Video အား ပရော်ဖက်ရှင်နယ်အဆင့် ပေါင်းစပ်ထုတ်လုပ်နေပါသည်..."):
@@ -356,7 +350,6 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     audio = ffmpeg.input("ts_input.mp4").audio
                     video = ffmpeg.input("ts_input.mp4").video
                     
-                    # Original Ratio Dimension Probing
                     if video_ratio == "Original":
                         try:
                             probe = ffmpeg.probe("ts_input.mp4")
@@ -373,7 +366,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     
-                    # 🔴 SPLIT FILTER OVERLAY ENGINE (No More Outgoing Edges Bug)
+                    # 🔴 FFMEPG LOCALIZED SPLIT FILTER OVERLAY ENGINE (Fixed Outgoing Edges Bug)
                     if ts_blur and blur_w > 0 and blur_h > 0:
                         ff_x = max(0, min(blur_x, v_w - 1))
                         ff_y = max(0, min(blur_y, v_h - 1))
@@ -426,7 +419,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                 except Exception as e:
                     st.error(f"Render Dynamic Processing Error: {e}")
 
-        # --- OUTPUT DASHBOARD ---
+        # --- OUTPUT DASHBOARD (Fixed Run_ID UnboundLocalError) ---
         if st.session_state.render_success:
             st.balloons()
             st.success("🎉 ဘာသာပြန် Video အောင်မြင်စွာ ထွက်လာပါပြီ!")
@@ -435,7 +428,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             col_o1, col_o2 = st.columns(2)
             with col_o1:
                 st.video(st.session_state.final_video_path)
-                st.markdown(get_download_link(st.session_state.final_video_path, f"Translated_{run_id}.mp4", "📥 Download Video"), unsafe_allow_html=True)
+                st.markdown(get_download_link(st.session_state.final_video_path, f"Translated_{st.session_state.ts_run_id}.mp4", "📥 Download Video"), unsafe_allow_html=True)
                 if ts_sub_mode != "No Subtitle" and os.path.exists("subtitles.srt"):
                     st.markdown(get_download_link("subtitles.srt", "Translated.srt", "📥 Download Subtitles (.SRT)"), unsafe_allow_html=True)
             with col_o2:
