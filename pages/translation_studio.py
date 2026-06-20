@@ -18,6 +18,7 @@ from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, VideoConfig, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY
 
 def generate_hybrid_thumbnail(bg_image_path, output_path, title_text, font_path="Padauk.ttf"):
+    """Pollinations AI မှရသော ပုံပေါ်တွင် ရွှေရောင်စာတန်း (Golden Text) ရိုက်နှိပ်ပေးမည့်စနစ်"""
     try:
         wrapped_text = "\n".join(line.center(max(len(l) for l in textwrap.wrap(title_text, 25)), " ") for line in (textwrap.wrap(title_text, 25) or [title_text]))
         with open("thumb_custom_text.txt", "w", encoding="utf-8") as f: f.write(wrapped_text)
@@ -35,12 +36,12 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
     available_fonts = get_available_fonts()
     
+    # 📌 Initialize Session States
     if "ts_step1_done" not in st.session_state: st.session_state.ts_step1_done = False
     if "ts_original_srt" not in st.session_state: st.session_state.ts_original_srt = ""
     if "ts_translated_srt" not in st.session_state: st.session_state.ts_translated_srt = ""
     if "ts_viral_title" not in st.session_state: st.session_state.ts_viral_title = ""
     if "ts_bg_image" not in st.session_state: st.session_state.ts_bg_image = None
-    if "ts_input_video" not in st.session_state: st.session_state.ts_input_video = "ts_input.mp4"
     if "ts_preview_frame" not in st.session_state: st.session_state.ts_preview_frame = "ts_preview.jpg"
 
     with st.sidebar:
@@ -48,7 +49,8 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         st.markdown("<b>🌐 Translation Settings</b>", unsafe_allow_html=True)
         target_lang = st.selectbox("Target Language", ["Myanmar (မြန်မာ)", "English", "Thai (ไทย)", "Indonesian (ไทย)"])
         
-        trans_tone = st.selectbox("🎭 Translation Style", ["Natural & Conversational (သဘာဝကျကျ)", "Gen-Z / Slang (လူငယ်သုံးစကား)", "Formal / Direct (တိုက်ရိုက်ဘာသာပြန်)"])
+        # 🎭 Advanced Localization Option
+        trans_tone = st.selectbox("🎭 Translation Style (ပြန်ဆိုမှုပုံစံ)", ["Natural & Conversational (သဘာဝကျကျ ဆီလျော်အောင်)", "Gen-Z / Slang (လူငယ်သုံးစကား/အလန်းစား)", "Formal / Direct (တိုက်ရိုက်ပြန်ဆိုချက်)"])
         
         st.markdown("<b>🎥 Copyright Bypass Options</b>", unsafe_allow_html=True)
         video_ratio = st.selectbox("Crop Ratio", ["Original", "9:16 (TikTok/Shorts)", "16:9 (YouTube)"])
@@ -58,10 +60,10 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         cb_fps = st.checkbox("🎬 Cinematic 24 FPS", value=False)
         
         st.markdown("<b>🎬 Visual & Watermark</b>", unsafe_allow_html=True)
-        ts_blur = st.checkbox("⬛ Hardcoded Subtitle Blocker (မူရင်းစာတန်းကိုဖုံးမည်)", value=True)
-        use_text_watermark = st.checkbox("✍️ Add Text Watermark", value=False)
-        watermark_text = st.text_input("Text Watermark", "") if use_text_watermark else ""
-        uploaded_logo = st.file_uploader("🖼️ Add Logo Image", type=["png", "jpg"])
+        ts_blur = st.checkbox("⬛ Localized Subtitle Blur (မူရင်းစာတန်းကို ကွက်ပြီးဝါးမည်)", value=True)
+        use_text_watermark = st.checkbox("✍ " + "Add Text Watermark", value=False)
+        watermark_text = st.text_input("Watermark Text", "") if use_text_watermark else ""
+        uploaded_logo = st.file_uploader("🖼️ Add Logo Image (Top Right)", type=["png", "jpg"])
 
         st.markdown("<b>📝 Subtitle Output Settings</b>", unsafe_allow_html=True)
         ts_font = st.selectbox("🔤 Font Style", available_fonts, index=0)
@@ -84,7 +86,8 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
     with col_in2:
         st.markdown("<div class='sub-box'>", unsafe_allow_html=True)
         st.markdown("<p style='font-weight: bold; color: #c084fc;'>🖼️ Smart Thumbnail Settings</p>", unsafe_allow_html=True)
-        gen_thumb = st.checkbox("🎨 Generate AI Art Background (Pollinations)", value=True)
+        # 🖼️ Thumbnail ထုတ်မထုတ် ရွေးချယ်နိုင်သော Toggle
+        gen_thumb = st.checkbox("🎨 Generate AI Art Background Thumbnail", value=True)
         custom_thumb_title = st.text_input("✍️ Custom Title (Optional)", placeholder="AI Title အစား ကိုယ်တိုင်ပေးလိုပါက ထည့်ပါ")
         st.markdown("<small style='color:gray;'>* AI Art ပေါ်တွင် ရွှေရောင်စာတန်းကို FFmpeg ဖြင့် အလိုအလျောက် ရိုက်နှိပ်ပေးပါမည်။</small>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -109,8 +112,8 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             else: download_video_from_url(video_url, v_input)
             extract_audio_fast(v_input, a_out)
             
-            # Extract preview frame
-            ffmpeg.input(v_input, ss=min(get_file_duration(v_input)/2, 5)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+            # Extract preview frame အစမ်းကြည့်ရန်
+            ffmpeg.input(v_input, ss=min(get_file_duration(v_input)/2, 4)).output(st.session_state.ts_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
         except Exception as e: st.error(str(e)); st.stop()
 
         pbar.progress(30, text="📝 မူရင်းဘာသာစကားကို နားထောင်နေပါသည်...")
@@ -138,20 +141,30 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
         pbar.progress(50, text=f"🌍 {target_lang} သို့ ဘာသာပြန်နေပါသည်...")
         try:
-            dict_prompt = f"\n[CRITICAL]: Apply this custom dictionary EXACTLY. Do not translate these names:\n{custom_dict}" if custom_dict.strip() else ""
+            dict_prompt = f"\n[CRITICAL DICTIONARY]: Apply these names exactly. Do not translate them:\n{custom_dict}" if custom_dict.strip() else ""
             
-            tone_instructions = "Translate literally word-by-word."
+            # 🔴 ADVANCED PROMPT: ဆီလျော်သဘာဝကျကျ ဘာသာပြန်ခိုင်းခြင်း
             if "Natural" in trans_tone:
-                tone_instructions = "Translate contextually and naturally. Use natural everyday spoken language (e.g., instead of translating 'What's up' literally, use the natural greeting equivalent in the target language). Avoid sounding like a robot."
+                tone_instructions = (
+                    "Translate contextually and colloquially into highly natural, flowing Burmese speech. "
+                    "DO NOT translate word-by-word literally. Convert foreign idioms and common modern slang into their "
+                    "actual conversational equivalent meaning in Myanmar custom (e.g., 'pulling my leg' should become 'နောက်နေတာ', 'What's up' should be a friendly native greeting). "
+                    "Ensure it sounds perfectly natural when spoken aloud."
+                )
             elif "Gen-Z" in trans_tone:
-                tone_instructions = "Translate using modern internet slang, Gen-Z expressions, and trendy social media language. Make it highly engaging for TikTok/Shorts audience."
+                tone_instructions = (
+                    "Translate using modern Myanmar internet slang, Gen-Z viral words, and emotional expressions. "
+                    "Make it extremely catchy, trendy, and punchy for short-form video consumers on TikTok/Reels."
+                )
+            else:
+                tone_instructions = "Translate accurately and directly."
 
-            translation_prompt = f"""You are an expert Localizer and Subtitle Translator. Translate the following SRT file to {target_lang}.
-            RULES: 
-            1. Maintain the EXACT SRT timestamp format and numbering. DO NOT break the SRT structure.
+            translation_prompt = f"""You are an expert Movie Localizer and Subtitle Translator. Translate the following SRT file into {target_lang}.
+            STRICT RULES: 
+            1. Maintain the EXACT SRT timestamp format and numbering structure. Do not alter timelines.
             2. {tone_instructions}
-            3. Do NOT add any extra text, notes, or explanations outside the SRT format.{dict_prompt}
-            4. At the very end of your response, add a viral Title on a new line EXACTLY like this: [TITLE: Your Viral Title]"""
+            3. Do NOT add any extra thoughts, translator notes, or side markdown text outside the pure SRT content.{dict_prompt}
+            4. At the absolute end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
 
             raw_translation = ""
             if "Gemini" in ai_provider:
@@ -190,42 +203,62 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         pbar.progress(100, text="✅ အဆင့် (၁) ပြီးစီးပါပြီ!")
 
     # ==========================================
-    # 🎬 STEP 2: REVIEW & FINAL RENDER
+    # 🎬 STEP 2: REVIEW & 4-AXIS BLUR CONFIG
     # ==========================================
     if st.session_state.ts_step1_done:
-        st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Final Render</h3>", unsafe_allow_html=True)
+        st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Interactive Customizing</h3>", unsafe_allow_html=True)
         
         col_r1, col_r2 = st.columns(2)
         with col_r1:
             st.markdown("**📝 Interactive SRT Editor**")
-            edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ဝင်ရောက်ပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.ts_translated_srt, height=400)
+            edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် တည်းဖြတ်နိုင်ပါသည်:", value=st.session_state.ts_translated_srt, height=450)
             
         with col_r2:
-            st.markdown("**👁️ Subtitle Blocker Settings**")
-            if ts_blur:
-                blur_height = st.slider("⬛ Black Bar အမြင့် (px)", 50, 400, 100, help="မူရင်းစာတန်းကို ဖုံးကွယ်မည့် အနက်ရောင်ဘား၏ အမြင့်ကို ချိန်ညှိပါ")
-                # 🔴 OpenCV အစား ပေါ့ပါးသော PIL (Pillow) ဖြင့် ပြောင်းလဲရေးသားထားသည်
-                if os.path.exists(st.session_state.ts_preview_frame):
-                    from PIL import Image, ImageDraw
-                    try:
-                        img = Image.open(st.session_state.ts_preview_frame).convert("RGBA")
-                        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-                        draw = ImageDraw.Draw(overlay)
-                        # Black box with 80% opacity (alpha 200/255)
-                        draw.rectangle([0, img.height - blur_height, img.width, img.height], fill=(0, 0, 0, 200))
-                        img_new = Image.alpha_composite(img, overlay)
-                        st.image(img_new, caption="Live Blur Preview", use_column_width=True)
-                    except Exception:
-                        st.image(st.session_state.ts_preview_frame, caption="Preview")
+            st.markdown("**👁️ 4-Axis Subtitle Blur Engine**")
+            if ts_blur and os.path.exists(st.session_state.ts_preview_frame):
+                from PIL import Image, ImageFilter, ImageOps
+                try:
+                    img_raw = Image.open(st.session_state.ts_preview_frame).convert("RGB")
+                    
+                    # 🔴 RATIO FIX: Output ဘောင်နှင့် ကွက်တိဖြစ်စေရန် PIL Image အား ညှိနှိုင်းခြင်း
+                    if video_ratio == "Original":
+                        v_w, v_h = img_raw.size
+                        img_preview = img_raw
+                    else:
+                        v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
+                        img_preview = ImageOps.fit(img_raw, (v_w, v_h), Image.Resampling.LANCZOS)
+                    
+                    # 🎛️ Sliders ၄ ခုဖြင့် တရုတ်စာတန်းပေါ် နေရာကွက်တိချိန်ခြင်း
+                    blur_x = st.slider("↔️ Blur X Position (ဘယ်/ညာ ရွှေ့ရန်)", 0, v_w, 0)
+                    blur_y = st.slider("↕️ Blur Y Position (အထက်/အောက် ရွှေ့ရန်)", 0, v_h, int(v_h * 0.72))
+                    blur_w = st.slider("📐 Blur Width (ဝါးမည့် အကွက်အကျယ်)", 10, v_w, v_w)
+                    blur_h = st.slider("📏 Blur Height (ဝါးမည့် အကွက်အမြင့်)", 10, v_h, int(v_h * 0.12))
+                    
+                    # Safe Box Calculation
+                    box_x1 = max(0, min(blur_x, v_w - 1))
+                    box_y1 = max(0, min(blur_y, v_h - 1))
+                    box_x2 = max(box_x1 + 1, min(blur_x + blur_w, v_w))
+                    box_y2 = max(box_y1 + 1, min(blur_y + blur_h, v_h))
+                    
+                    # 🔴 PIL Gaussian Blur Overlay (သဘာဝကျကျ အစမ်းကြည့်ရှုခြင်း)
+                    cropped_part = img_preview.crop((box_x1, box_y1, box_x2, box_y2))
+                    blurred_part = cropped_part.filter(ImageFilter.GaussianBlur(radius=22))
+                    img_preview.paste(blurred_part, (box_x1, box_y1))
+                    
+                    st.image(img_preview, caption="Live Localized Blur Preview (နောက်ခံမြင်ရပြီး စကားလုံးဝါးသွားမည့်စနစ်)", use_column_width=True)
+                except Exception as e:
+                    st.error(f"Preview Frame Layout Draw Failure: {e}")
+                    v_w, v_h = 720, 1280
             else:
                 blur_height = 0
-                st.info("Subtitle Blocker ပိတ်ထားပါသည်။")
+                v_w, v_h = 720, 1280
+                st.info("💡 Blur Subtitle Blocker ပိတ်ထားပါသည်။")
 
             st.markdown("**🖼️ Thumbnail Preview**")
             final_title = custom_thumb_title if custom_thumb_title.strip() else st.session_state.ts_viral_title
-            st.success(f"Title: {final_title}")
-            if st.session_state.ts_bg_image and os.path.exists(st.session_state.ts_bg_image):
-                st.image(st.session_state.ts_bg_image, caption="AI Background")
+            st.success(f"Generated Title: {final_title}")
+            if gen_thumb and st.session_state.ts_bg_image and os.path.exists(st.session_state.ts_bg_image):
+                st.image(st.session_state.ts_bg_image, caption="AI Generated Background")
 
         if st.button("🎬 RENDER MASTER VIDEO", type="primary"):
             run_id = str(int(time.time()))
@@ -233,7 +266,7 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
             thumb_final = f"THUMB_FINAL_{run_id}.jpg"
             st.session_state.final_video_path = v_final
             
-            with st.spinner("⏳ Master Video ပေါင်းစပ်နေပါသည်..."):
+            with st.spinner("⏳ Master Video အား ပရော်ဖက်ရှင်နယ်အဆင့် ပေါင်းစပ်ထုတ်လုပ်နေပါသည်..."):
                 try:
                     parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
                     
@@ -247,18 +280,28 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     audio = ffmpeg.input("ts_input.mp4").audio
                     video = ffmpeg.input("ts_input.mp4").video
                     
+                    # 🔴 RATIO FIX: Original ဖြစ်ပါက Dimensions အား မပြောင်းလဲဘဲ မူရင်းအတိုင်း ထိန်းသိမ်းမည်
                     if video_ratio != "Original":
-                        v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         video = ffmpeg.filter(video, 'scale', v_w, v_h, force_original_aspect_ratio='increase').filter('crop', v_w, v_h)
                     
                     if cb_bypass: video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
+                    if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     
-                    if ts_blur and blur_height > 0:
-                        video = ffmpeg.filter(video, 'drawbox', x=0, y=f'ih-{blur_height}', w='iw', h=blur_height, color='black@0.9', thickness='fill')
+                    # 🔴 FFMEPG LOCALIZED CROP-BOXBLUR OVERLAY ENGINE
+                    if ts_blur and blur_w > 0 and blur_h > 0:
+                        ff_x = max(0, min(blur_x, v_w - 1))
+                        ff_y = max(0, min(blur_y, v_h - 1))
+                        ff_w = max(10, min(blur_w, v_w - ff_x))
+                        ff_h = max(10, min(blur_h, v_h - ff_y))
+                        
+                        # စာတန်းရှိမည့်နေရာကို ဖြတ်ထုတ် -> ဝါးပစ် -> မူရင်းပေါ် ပြန်တင် (Overlay)
+                        blurred_stream = video.filter('crop', w=ff_w, h=ff_h, x=ff_x, y=ff_y).filter('boxblur', luma_radius=22, luma_power=2)
+                        video = ffmpeg.overlay(video, blurred_stream, x=ff_x, y=ff_y)
 
+                    # Subtitles Burn-in
                     if render_cfg.subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
-                        wrap_width = 25 if "9:16" in render_cfg.ratio else 45
+                        wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = render_cfg.font_path.replace('\\', '/')
 
                         for i, (start, end, text) in enumerate(parsed_timestamps):
@@ -271,32 +314,46 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
 
                             if "Center" in render_cfg.sub_position: y_expr = "(h-text_h)/2"
                             elif "Top" in render_cfg.sub_position: y_expr = "150"
-                            else: y_expr = "h-text_h-100"
+                            else: y_expr = "h-text_h-120"
 
                             c_str = "yellow" if "Yellow" in render_cfg.sub_color else ("green" if "Green" in render_cfg.sub_color else "white")
-                            video = ffmpeg.filter(video, 'drawtext', textfile=txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=render_cfg.sub_size, bordercolor='black', borderw=2.5, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
+                            video = ffmpeg.filter(video, 'drawtext', textfile=txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=render_cfg.sub_size, bordercolor='black', borderw=2.8, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
 
-                    out = ffmpeg.output(video, audio, v_final, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=23, t=get_file_duration("ts_input.mp4"))
+                    if use_text_watermark and watermark_text:
+                        video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
+                    if uploaded_logo and os.path.exists("ts_logo.png"): # logo rendering if exists
+                        try:
+                            logo_input = ffmpeg.input(uploaded_logo).filter('scale', -1, 75)
+                            video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
+                        except Exception: pass
+
+                    out = ffmpeg.output(video, audio, v_final, vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=get_file_duration("ts_input.mp4"))
                     out.overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                     st.session_state.render_success = True
 
-                    if st.session_state.ts_bg_image and gen_thumb:
+                    if gen_thumb and st.session_state.ts_bg_image:
                         generate_hybrid_thumbnail(st.session_state.ts_bg_image, thumb_final, final_title, ts_font)
                         st.session_state.thumb_path_A = thumb_final
 
                 except Exception as e:
-                    st.error(f"Render Error: {e}")
+                    st.error(f"Render Dynamic Processing Error: {e}")
 
+        # --- OUTPUT DASHBOARD ---
         if st.session_state.render_success:
             st.balloons()
             st.success("🎉 ဘာသာပြန် Video အောင်မြင်စွာ ထွက်လာပါပြီ!")
+            st.markdown(f"<h3 style='color:#38bdf8; text-align:center;'>🔥 {final_title}</h3>", unsafe_allow_html=True)
+            
             col_o1, col_o2 = st.columns(2)
             with col_o1:
                 st.video(st.session_state.final_video_path)
-                st.markdown(get_download_link(st.session_state.final_video_path, "Translated_Video.mp4", "📥 Download Video"), unsafe_allow_html=True)
+                st.markdown(get_download_link(st.session_state.final_video_path, f"Translated_{run_id}.mp4", "📥 Download Video"), unsafe_allow_html=True)
                 if ts_sub_mode != "No Subtitle" and os.path.exists("subtitles.srt"):
-                    st.markdown(get_download_link("subtitles.srt", "Translated_Subs.srt", "📥 Download Subtitles (.SRT)"), unsafe_allow_html=True)
+                    st.markdown(get_download_link("subtitles.srt", "Translated.srt", "📥 Download Subtitles (.SRT)"), unsafe_allow_html=True)
             with col_o2:
-                if st.session_state.thumb_path_A and os.path.exists(st.session_state.thumb_path_A):
-                    st.image(st.session_state.thumb_path_A, caption="Custom AI Thumbnail")
+                if gen_thumb and st.session_state.thumb_path_A and os.path.exists(st.session_state.thumb_path_A):
+                    st.image(st.session_state.thumb_path_A, caption="Custom Hybrid Thumbnail (Golden Stamp)")
                     st.markdown(get_download_link(st.session_state.thumb_path_A, "Thumbnail.jpg", "📥 Download Thumbnail"), unsafe_allow_html=True)
+                
+                with st.expander("👁️ Review Subtitle Script", expanded=True):
+                    st.text_area("Final Translated Script:", value=edited_srt, height=180, disabled=True)
