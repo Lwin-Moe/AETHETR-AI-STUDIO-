@@ -169,7 +169,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 raw_output_text = ""
                 keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
                 
-                # 🔴 1. MULTI-KEY FALLBACK (SCRIPT GENERATION)
                 if "Gemini" in ai_provider:
                     success_gemini = False; last_err = ""
                     for current_key in keys_list:
@@ -223,22 +222,47 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (ဇာတ်လမ်းရှည်ပါက ၂-၃ မိနစ်ခန့် ကြာနိုင်ပါသည်)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
             
-            # 🔴 2. MULTI-KEY FALLBACK (SYNERGY/TTS GENERATION)
             tts_keys = [k.strip() for k in (synergy_key if synergy_key else api_key_input).split(",") if k.strip()]
-            success_tts = False; last_tts_err = ""
-            for current_key in tts_keys:
-                try: 
-                    asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
-                    st.session_state.md_audio_dur = get_file_duration(a_generated)
-                    success_tts = True; break
-                except Exception as e: last_tts_err = str(e); continue
+            success_tts = False
+            last_tts_err = ""
+            
+            # 🔴 THE BULLETPROOF FIX (MONKEY PATCH): Intercept st.stop() to prevent streamtlit crash
+            orig_error = st.error
+            orig_stop = st.stop
+            
+            def mock_error(*args, **kwargs): pass
+            def mock_stop(*args, **kwargs): raise RuntimeError("MOCKED_STOP_EXCEPTION")
+            
+            try:
+                # Override globally so external file's st.stop() gets caught
+                st.error = mock_error
+                st.stop = mock_stop
+                
+                for current_key in tts_keys:
+                    try: 
+                        if os.path.exists(a_generated): os.remove(a_generated)
+                        asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
+                        
+                        # 1KB ထက်ကြီးသော အသံဖိုင်ထွက်လာမှသာ အောင်မြင်သည်ဟု ယူဆမည်
+                        if os.path.exists(a_generated) and os.path.getsize(a_generated) > 1000:
+                            st.session_state.md_audio_dur = get_file_duration(a_generated)
+                            success_tts = True
+                            break
+                    except BaseException as e: 
+                        # BaseException သည် Runtime/StopException များကိုပါ ဖမ်းပေးပါသည်
+                        last_tts_err = str(e)
+                        continue
+            finally:
+                # 🔴 Restore Streamlit Functions back to normal
+                st.error = orig_error
+                st.stop = orig_stop
                 
             if not success_tts:
-                st.error(f"❌ TTS Error on all keys: {last_tts_err}")
+                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
 
         if subtitle_mode != "No Subtitle":
-            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (Audio Compressing...)"):
+            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
                 sync_audio_path = "md_sync_compressed.mp3"
@@ -250,7 +274,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
                 whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
                 
-                # 🔴 3. MULTI-KEY FALLBACK (WHISPER SYNC)
                 sync_success = False; last_sync_err = ""
                 for w_key in whisper_keys:
                     try:
@@ -367,7 +390,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
-                    # --- Custom FFmpeg Pipeline for Dubbing ---
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
@@ -388,13 +410,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
                     if cb_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
                     
-                    # 🔴 SUPER STABLE BLUR ENGINE
                     if md_blur and blur_w > 0 and blur_h > 0:
                         ff_x, ff_y = int(max(0, min(blur_x, v_w - 1))), int(max(0, min(blur_y, v_h - 1)))
                         ff_w, ff_h = int(max(10, min(blur_w, v_w - ff_x))), int(max(10, min(blur_h, v_h - ff_y)))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
-                    # Subtitles Rendering
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
                         safe_font_path = selected_font.replace('\\', '/')
