@@ -21,6 +21,10 @@ def tuples_to_srt(parsed_data):
     """Whisper မှထွက်လာသော ဒေတာများကို Editor တွင်ပြင်နိုင်ရန် SRT String သို့ပြောင်းပေးသည့်စနစ်"""
     srt_str = ""
     for i, (start, end, text) in enumerate(parsed_data, 1):
+        # 🔴 SILENCE CLIP ENGINE: စကားမပြောတော့ဘဲ ငြိမ်နေချိန်တွင် စာတန်းထိုးပျောက်သွားစေရန် စာဖတ်နှုန်းဖြင့် ထိန်းချုပ်ခြင်း
+        natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+        end = min(start + natural_dur, end)
+        
         def format_srt_time(seconds):
             h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds % 1) * 1000)
             return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
@@ -209,7 +213,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (Audio Compressing...)"):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                # 🔴 500 ERROR FIX: Groq 25MB Limit ကို ကျော်ဖြတ်ရန် WAV အား MP3 အဖြစ် ချုံ့ပေးခြင်း
+                # 🔴 GROQ 25MB LIMIT FIX: အသံဖိုင်ကို MP3 အဖြစ် ချုံ့ပြီးမှ ပို့မည်
                 sync_audio_path = "md_sync_compressed.mp3"
                 subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "libmp3lame", "-ab", "64k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
                 
@@ -243,6 +247,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 
         with col_r2:
             st.markdown("**👁️ 4-Axis Subtitle Blur Engine**")
+            # 🔴 TYPE-ERROR FIX: Variable များကို အမြဲကြိုတင်သတ်မှတ်ထားခြင်းဖြင့် Error ကို ရှောင်ရှားပါသည်
+            blur_x, blur_y, blur_w, blur_h = 0, 0, 0, 0
             if md_blur and os.path.exists(st.session_state.md_preview_frame):
                 from PIL import Image, ImageFilter, ImageOps
                 try:
@@ -252,7 +258,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         img_preview = img_raw
                     else:
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
-                        img_preview = ImageOps.fit(img_raw, (v_w, v_h), Image.Resampling.LANCZOS)
+                        # 🔴 TYPE-ERROR FIX: Image.Resampling ကို ဖြုတ်ပြီး Default အတိုင်း ထားရှိသည်
+                        img_preview = ImageOps.fit(img_raw, (int(v_w), int(v_h)))
+                    
+                    # Safe Casting for sliders
+                    v_w = int(max(20, v_w))
+                    v_h = int(max(20, v_h))
                     
                     blur_x = st.slider("↔️ Blur X (ဘယ်/ညာ)", 0, v_w, 0)
                     blur_y = st.slider("↕️ Blur Y (အထက်/အောက်)", 0, v_h, int(v_h * 0.75))
@@ -267,11 +278,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     cropped_part = img_preview.crop((box_x1, box_y1, box_x2, box_y2))
                     img_preview.paste(cropped_part.filter(ImageFilter.GaussianBlur(radius=22)), (box_x1, box_y1))
                     st.image(img_preview, caption="Live Blur Preview", use_column_width=True)
-                except: v_w, v_h = 720, 1280
+                except Exception as e: 
+                    st.error(f"Preview Frame Layout Draw Failure: {e}")
             else:
-                blur_w, blur_h = 0, 0
-                v_w, v_h = 720, 1280
-                st.info("💡 Blur Option ပိတ်ထားပါသည်။")
+                st.info("💡 Blur Option ပိတ်ထားပါသည်။ သို့မဟုတ် Preview ပုံမရှိပါ။")
 
         if st.button("🎬 RENDER MASTER VIDEO", type="primary"):
             st.session_state.md_run_id = str(int(time.time()))
@@ -285,6 +295,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
+                    # --- Custom FFmpeg Pipeline for Dubbing ---
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
@@ -305,7 +316,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
                     if cb_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
                     
-                    # 🔴 4-Axis Localized Blur (delogo)
+                    # 🔴 SUPER STABLE BLUR ENGINE (delogo ကိုအသုံးပြု၍ multiple stream error ရှင်းလင်းခြင်း)
                     if md_blur and blur_w > 0 and blur_h > 0:
                         ff_x, ff_y = int(max(0, min(blur_x, v_w - 1))), int(max(0, min(blur_y, v_h - 1)))
                         ff_w, ff_h = int(max(10, min(blur_w, v_w - ff_x))), int(max(10, min(blur_h, v_h - ff_y)))
