@@ -7,3 +7,4 @@ google-genai
 groq
 openai
 requests
+python-dotenv
