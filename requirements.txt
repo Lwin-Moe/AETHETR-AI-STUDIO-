@@ -8,3 +8,8 @@ groq
 openai
 requests
 python-dotenv
+torch
+torchaudio
+ctranslate2
+faster-whisper
+git+https://github.com/m-bain/whisperx.git
