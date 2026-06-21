@@ -18,27 +18,31 @@ from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import generate_whisper_sync_srt, parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
-def get_exact_audio_duration(file_path):
-    """ထွက်လာသည့် အသံဖိုင်၏ ကြာချိန်စက္ကန့်အစစ်အမှန်ကို အမှားကင်းကင်းဖြင့် တိုက်ရိုက်ရယူသည့်စနစ်"""
+# 🔴 BULLETPROOF DURATION ENGINE: Subprocess နှင့် FFmpeg Python နှစ်မျိုးလုံးသုံး၍ အချိန်တိကျစွာ တွက်ချက်သည်
+def get_safe_duration(file_path):
+    try:
+        ffprobe_bin = FFMPEG_BINARY.replace("ffmpeg", "ffprobe")
+        cmd = [ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", file_path]
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        dur = float(res.stdout.strip())
+        if dur > 0: return dur
+    except BaseException: pass
+    
     try:
         probe = ffmpeg.probe(file_path)
-        format_info = probe.get('format', {})
-        dur = format_info.get('duration')
-        if dur:
-            return float(dur)
-    except BaseException:
-        pass
-    return None
+        dur = float(probe['format']['duration'])
+        if dur > 0: return dur
+    except BaseException: pass
+    
+    return 0.0
 
+# 🔴 SRT ENGINE FIX: အချိန်များကို ကြားမှဝင်မပြင်တော့ဘဲ AI မှရသော မူရင်းအချိန်အတိုင်း အတိအကျ သုံးပါသည်
 def tuples_to_srt(parsed_data):
     srt_str = ""
     for i, (start_raw, end_raw, text) in enumerate(parsed_data, 1):
         try:
             start = float(start_raw)
             end = float(end_raw)
-            
-            natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-            end = min(start + natural_dur, end)
             
             def format_srt_time(seconds):
                 sec = float(seconds)
@@ -64,8 +68,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     if "md_run_id" not in st.session_state: st.session_state.md_run_id = str(int(time.time()))
     if "md_preview_frame" not in st.session_state: st.session_state.md_preview_frame = "md_preview.jpg"
     if "md_audio_dur" not in st.session_state: st.session_state.md_audio_dur = 0.0
-    if "final_video_path" not in st.session_state: st.session_state.final_video_path = ""
-    if "render_success" not in st.session_state: st.session_state.render_success = False
 
     with st.sidebar:
         st.markdown("---")
@@ -166,9 +168,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 else: download_video_from_url(video_url, v_input)
                 extract_audio_fast(v_input, a_extracted)
                 
-                # မူရင်းဗီဒီယို ကြာချိန်ရှာဖွေခြင်း
-                v_dur = get_exact_audio_duration(v_input) or 10.0
-                preview_time = min(v_dur / 2, 5.0)
+                # Fetch Original Video Duration safely
+                v_dur_initial = get_safe_duration(v_input) or 10.0
+                preview_time = min(v_dur_initial / 2, 5.0)
                 ffmpeg.input(v_input, ss=preview_time).output(st.session_state.md_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
             except Exception as dl_err: st.error(str(dl_err)); st.stop()
 
@@ -256,8 +258,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             for idx, current_key in enumerate(tts_keys, 1):
                 try: 
                     st.toast(f"🎙️ TTS: Key {idx} ဖြင့် အသံထုတ်လုပ်နေပါသည်...")
-                    if os.path.exists(a_generated):
-                        os.remove(a_generated)
+                    if os.path.exists(a_generated): os.remove(a_generated)
                     
                     if inspect.iscoroutinefunction(generate_tts):
                         asyncio.run(generate_tts(
@@ -286,16 +287,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             voice_fx=fx_level
                         )
                     
-                    # 🔴 FULL-LENGTH DURATION ENGINE: ထွက်လာသည့် အသံဖိုင်၏ ကြာချိန်အစစ်အမှန်ကို တိုက်ရိုက်တိုင်းတာခြင်း
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
-                        exact_dur = get_exact_audio_duration(a_generated)
-                        if exact_dur and exact_dur > 0.5:
-                            st.session_state.md_audio_dur = exact_dur
-                            success_tts = True
-                            st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။ ကြာချိန် - {exact_dur:.2f} စက္ကန့်")
-                            break
-                        else:
-                            last_tts_err = "Generated audio duration could not be fetched accurately."
+                        a_dur = get_safe_duration(a_generated)
+                        st.session_state.md_audio_dur = a_dur if a_dur > 0.5 else 30.0
+                        success_tts = True
+                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။")
+                        break
                     else:
                         last_tts_err = "Generated audio file is missing or empty."
                         st.toast(f"⚠️ TTS: Key {idx} မှ အသံမထွက်ပါ။ နောက် Key ပြောင်းနေပါသည်...")
@@ -312,10 +309,16 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                # 🔴 500 Error တားဆီးရန် 16kHz Mono MP3 အဖြစ် ချုံ့သော်လည်း Timeline မဖြတ်တောက်ဘဲ အပြည့်ပို့ပါသည်
-                a_sync_input = "md_audio_optimized.mp3"
+                a_sync_input = a_generated
                 try:
-                    ffmpeg.input(a_generated).output(a_sync_input, ar=16000, ac=1, format='mp3', audio_bitrate='32k').overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                    optimized_audio = "md_audio_optimized.mp3"
+                    ffmpeg.input(a_generated).output(optimized_audio, ar=16000, ac=1, format='mp3', audio_bitrate='32k').overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                    audio_dur = get_safe_duration(optimized_audio)
+                    if audio_dur > 480:
+                        a_sync_input = "md_audio_trimmed.mp3"
+                        ffmpeg.input(optimized_audio).output(a_sync_input, t=480).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                    else:
+                        a_sync_input = optimized_audio
                 except Exception:
                     a_sync_input = a_generated
                 
@@ -329,49 +332,24 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     st.toast(f"📝 Sync: Key {idx} ဖြင့် စာတန်းထိုး ချိန်ညှိနေပါသည်...")
                     for attempt in range(max_retries_per_key):
                         try:
-                            raw_srt = ""
-                            if w_key.startswith("gsk_"):
-                                client_audio = Groq(api_key=w_key)
-                                with open(a_sync_input, "rb") as f:
-                                    transcription = client_audio.audio.transcriptions.create(
-                                        file=(a_sync_input, f.read()),
-                                        model="whisper-large-v3",
-                                        response_format="verbose_json"
-                                    )
-                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                            success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(
+                                a_sync_input, 
+                                st.session_state.md_generated_script, 
+                                w_key, 
+                                sub_short
+                            )
+                            if success_sync:
+                                st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
+                                sync_success = True
+                                st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
+                                break
                             else:
-                                client_openai = openai.OpenAI(api_key=w_key)
-                                with open(a_sync_input, "rb") as f:
-                                    transcription = client_openai.audio.transcriptions.create(
-                                        model="whisper-1", 
-                                        file=f, 
-                                        response_format="verbose_json"
-                                    )
-                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-
-                            for i, segment in enumerate(segments, 1):
-                                start_raw = segment['start'] if isinstance(segment, dict) else segment.start
-                                end_raw = segment['end'] if isinstance(segment, dict) else segment.end
-                                text_raw = segment['text'] if isinstance(segment, dict) else segment.text
-                                
-                                start = float(start_raw)
-                                end = float(end_raw)
-                                text = str(text_raw).strip()
-                                
-                                natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-                                end = min(start + natural_dur, end)
-                                
-                                def format_srt_time(seconds):
-                                    sec = float(seconds)
-                                    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-                                    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                                
-                                raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
-
-                            st.session_state.md_generated_srt = raw_srt.strip()
-                            sync_success = True
-                            st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
-                            break
+                                last_sync_err = err_sync
+                                if "500" in str(err_sync) or "Internal Server Error" in str(err_sync):
+                                    time.sleep(5)
+                                    continue
+                                else:
+                                    break  
                         except BaseException as e:
                             last_sync_err = str(e)
                             if "500" in str(e) or "Internal Server Error" in str(e):
@@ -402,7 +380,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         with col_r1:
             st.markdown("**📝 Interactive SRT Editor**")
             if subtitle_mode != "No Subtitle":
-                edited_srt = st.text_area("စာတန်းထိုးများကို စိုက်ကြည့်ပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.md_generated_srt, height=450)
+                edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.md_generated_srt, height=450)
             else:
                 edited_srt = ""
                 st.info("💡 Subtitles ပိတ်ထားပါသည်။")
@@ -450,6 +428,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             
             with st.spinner("⏳ Master Video အား ပေါင်းစပ်ထုတ်လုပ်နေပါသည်..."):
                 try:
+                    # 🔴 FULL-LENGTH RENDER DUR CALCULATION
+                    v_dur_real = get_safe_duration(v_input)
+                    a_dur_real = st.session_state.md_audio_dur
+                    render_dur = max(v_dur_real, a_dur_real)
+                    if render_dur <= 0: render_dur = 60.0
+
                     parsed_timestamps = []
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
@@ -520,10 +504,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
                         except BaseException: pass
 
-                    # 🔴 RENDER TIMELINE MAXIMUM FIX: Full Audio Duration အတိုင်း အချောသတ် Render ဆွဲပေးပါသည်
                     try:
+                        # 🔴 FINAL RENDER WITH FULL RENDER_DUR
                         (
-                            ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur)
+                            ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=render_dur)
                             .overwrite_output()
                             .run(cmd=FFMPEG_BINARY, capture_stderr=True)
                         )
@@ -538,8 +522,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             try:
                                 main_a = ffmpeg.input("temp_dubbed.mp4").audio
                                 bgm_a = ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('volume', bgm_volume)
-                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='first')
-                                ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
+                                # 🔴 BGM LOOP FIX: Ensure BGM plays until the end of the video
+                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='longest')
+                                ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=render_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
                             except ffmpeg.Error as e:
                                 err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
                                 st.warning(f"BGM Mixing failed, skipping BGM:\n{err_msg}")
@@ -548,7 +533,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     else: shutil.move("temp_dubbed.mp4", v_final)
 
                     try:
-                        for tsuffix, t_val in [("A", min(st.session_state.md_audio_dur*0.2, 10)), ("B", min(st.session_state.md_audio_dur*0.5, 20))]:
+                        for tsuffix, t_val in [("A", min(render_dur*0.2, 10)), ("B", min(render_dur*0.5, 20))]:
                             tname = f"thumb_{tsuffix}_{st.session_state.md_run_id}.jpg"
                             if cb_thumb_text: success_thumb, _ = generate_professional_thumbnail(v_input, tname, st.session_state.md_viral_title, t_val, style=md_thumb_style, font_path=selected_font)
                             else: ffmpeg.input(v_input, ss=t_val).output(tname, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True); success_thumb = os.path.exists(tname)
