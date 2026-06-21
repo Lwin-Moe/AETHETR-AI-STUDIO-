@@ -17,7 +17,9 @@ import openai
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import parse_and_save_real_srt
-from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
+# 🔴 အောက်ပါ import ကို ချန်ထားပါ (local function က override လုပ်မည်)
+from core_engines.video_render import render_premium_saas_video as _original_render_video
+from core_engines.video_render import generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
 # 🔴 BULLETPROOF DURATION ENGINE
 def get_wav_duration(file_path):
@@ -61,6 +63,101 @@ def get_speed_up_filter(ratio):
         ratio /= 0.5
     chain.append(f"atempo={ratio:.6f}")
     return ",".join(chain)
+
+# 🔴 FIXED render_premium_saas_video (override imported one)
+def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, ratio,
+                               use_bypass=False, use_blur=False, watermark="",
+                               subtitle_mode="Both (Burn + SRT)", use_mirror=False,
+                               use_color=False, use_grain=False, use_fps=False,
+                               sub_style_str="", use_freeze=False, logo_path=None,
+                               font_dir="."):
+    try:
+        a_dur = get_file_duration(in_a)
+        v_max_dur = get_file_duration(in_v)
+
+        safe_srt_path = os.path.abspath("subtitles.srt").replace('\\', '/')
+        safe_srt_path_escaped = safe_srt_path.replace(':', '\\:')
+        safe_font_dir = font_dir.replace('\\', '/').replace(':', '\\:')
+
+        with open("subtitles.srt", "w", encoding="utf-8-sig") as f:
+            for i, (start, end, text) in enumerate(parsed_timestamps, start=1):
+                if start >= v_max_dur:
+                    continue
+                safe_end = min(end, v_max_dur)
+                def fmt_t(s):
+                    return f"{int(s//3600):02d}:{int((s%3600)//60):02d}:{int(s%60):02d},{int((s-int(s))*1000):03d}"
+                f.write(f"{i}\n{fmt_t(start)} --> {fmt_t(safe_end)}\n{text}\n\n")
+
+        video = ffmpeg.input(in_v).video
+        if use_bypass:
+            video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
+        if use_mirror:
+            video = ffmpeg.filter(video, 'hflip')
+        if use_color:
+            video = ffmpeg.filter(video, 'eq', brightness=0.02, contrast=1.05, saturation=1.1)
+        if use_grain:
+            video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
+        if use_fps:
+            video = ffmpeg.filter(video, 'fps', fps=24, round='near')
+        if use_freeze:
+            video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
+
+        video = ffmpeg.filter(video, 'scale', 'trunc(oh*a/2)*2', 1080, flags='bicubic')
+
+        # ---------- AUDIO SYNC FIX ----------
+        audio = ffmpeg.input(in_a).audio
+
+        # 1. Speed up if audio is longer than video (unlimited atempo chain)
+        if a_dur > v_max_dur * 1.01:
+            ratio = a_dur / v_max_dur
+            chain = []
+            temp_r = ratio
+            while temp_r > 2.0:
+                chain.append("atempo=2.0")
+                temp_r /= 2.0
+            while temp_r < 0.5:
+                chain.append("atempo=0.5")
+                temp_r /= 0.5
+            chain.append(f"atempo={temp_r:.6f}")
+            atempo_filter = ",".join(chain)
+            audio = ffmpeg.filter(audio, 'atempo', atempo_filter)
+
+        # 2. Trim to exact video duration and pad with silence if needed
+        audio = ffmpeg.filter(audio, 'atrim', start=0, end=v_max_dur)
+        audio = ffmpeg.filter(audio, 'apad', whole_dur=v_max_dur)
+
+        # ---------- Visual adjustments ----------
+        if use_blur:
+            video = ffmpeg.filter(video, 'drawbox', x=0, y='ih-90', w='iw', h=90, color='black@0.95', thickness='fill')
+        if ratio == "9:16 (TikTok/Shorts)":
+            video = ffmpeg.filter(video, 'crop', 'min(iw, ih*9/16)', 'ih')
+        elif ratio == "16:9 (YouTube)":
+            video = ffmpeg.filter(video, 'crop', 'iw', 'min(ih, iw*9/16)')
+
+        if watermark:
+            video = ffmpeg.filter(video, 'drawtext', text=watermark, x='w-tw-15', y='15', fontsize=30, fontcolor='white@0.5')
+
+        if logo_path and os.path.exists(logo_path):
+            logo = ffmpeg.input(logo_path)
+            logo = ffmpeg.filter(logo, 'scale', -1, 80)
+            video = ffmpeg.overlay(video, logo, x='W-w-20', y=20)
+
+        if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and os.path.exists("subtitles.srt"):
+            video = ffmpeg.filter(video, 'subtitles', safe_srt_path_escaped,
+                                  charenc='UTF-8', fontsdir=safe_font_dir,
+                                  force_style=sub_style_str)
+
+        out = ffmpeg.output(video, audio, out_v,
+                            vcodec='libx264', acodec='aac', preset='fast', crf=21,
+                            t=v_max_dur)
+        out.run(cmd=FFMPEG_BINARY, overwrite_output=True, capture_stdout=True, capture_stderr=True)
+        return True, "Success"
+    except ffmpeg.Error as e:
+        return False, str(e)
+
+# Helper function for duration (used inside render)
+def get_file_duration(file_path):
+    return get_video_duration(file_path)
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -348,7 +445,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"Script Error: {e}")
                 st.stop()
 
-        # ---------- 3️⃣ Generate TTS Audio (FIX: speed up only, never slow down) ----------
+        # ---------- 3️⃣ Generate TTS Audio (with tag removal) ----------
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
 
@@ -362,9 +459,14 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
 
+                    # 🔴 FIX: Remove Synergy tags like [pause=1.0] before TTS
+                    script_for_tts = st.session_state.md_generated_script
+                    script_for_tts = re.sub(r'\[.*?\]', '', script_for_tts)
+                    script_for_tts = re.sub(r'\{.*?\}', '', script_for_tts)
+
                     if inspect.iscoroutinefunction(generate_tts):
                         asyncio.run(generate_tts(
-                            st.session_state.md_generated_script,
+                            script_for_tts,
                             voice_char,
                             a_generated,
                             engine=audio_engine_choice,
@@ -377,7 +479,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         ))
                     else:
                         generate_tts(
-                            st.session_state.md_generated_script,
+                            script_for_tts,
                             voice_char,
                             a_generated,
                             engine=audio_engine_choice,
@@ -390,49 +492,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         )
 
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
-                        a_dur_raw = get_wav_duration(a_generated)
-                        target_dur = st.session_state.md_video_dur
-                        audio_to_process = a_generated
-
-                        # Only speed up if audio is longer than video
-                        if a_dur_raw > target_dur * 1.01:
-                            ratio = a_dur_raw / target_dur
-                            filt = get_speed_up_filter(ratio)
-                            if filt:
-                                synced_path = "md_audio_sped.wav"
-                                subprocess.run([
-                                    FFMPEG_BINARY, "-y",
-                                    "-i", a_generated,
-                                    "-filter:a", filt,
-                                    "-c:a", "pcm_s16le",
-                                    synced_path
-                                ], capture_output=True)
-                                if os.path.exists(synced_path) and os.path.getsize(synced_path) > 100:
-                                    audio_to_process = synced_path
-                                    st.toast(f"⚡ Speed up audio: {a_dur_raw:.1f}s → {target_dur:.1f}s")
-
-                        # Final exact duration: pad with silence if needed, trim if needed
-                        final_audio = "md_audio_exact.wav"
-                        # atrim cuts to target_dur, apad ensures it's exactly target_dur (pad with silence if shorter)
-                        filter_complex = f"atrim=0:{target_dur},apad=whole_dur={target_dur}"
-                        subprocess.run([
-                            FFMPEG_BINARY, "-y",
-                            "-i", audio_to_process,
-                            "-af", filter_complex,
-                            "-t", str(target_dur),
-                            "-c:a", "pcm_s16le",
-                            final_audio
-                        ], capture_output=True)
-
-                        if os.path.exists(final_audio) and os.path.getsize(final_audio) > 100:
-                            a_final_target = final_audio
-                        else:
-                            a_final_target = audio_to_process
-
-                        st.session_state.md_final_audio_path = a_final_target
-                        st.session_state.md_audio_dur = get_wav_duration(a_final_target)
+                        # No need for atempo here; render_premium_saas_video will handle sync
+                        st.session_state.md_final_audio_path = a_generated
+                        st.session_state.md_audio_dur = get_wav_duration(a_generated)
                         success_tts = True
-                        st.toast(f"✅ TTS ready. (Audio {st.session_state.md_audio_dur:.2f}s)")
+                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။ (Audio {st.session_state.md_audio_dur:.2f}s)")
                         break
                     else:
                         last_tts_err = "Generated audio file is missing or empty."
@@ -443,7 +507,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     continue
 
             if not success_tts:
-                st.error(f"❌ TTS Error: {last_tts_err}")
+                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
 
         # ---------- 4️⃣ Whisper Timestamps + Script Alignment ----------
@@ -516,12 +580,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 # Combine script words with segments
                 script_text = st.session_state.md_generated_script.strip()
                 if not script_text:
-                    st.error("❌ Script is empty.")
+                    st.error("❌ Script is empty. Cannot generate subtitles.")
                     st.stop()
 
                 words = script_text.split()
                 if not words:
-                    st.error("❌ No words found.")
+                    st.error("❌ No words found in script. Check script format.")
                     st.stop()
 
                 total_dur = sum(seg['end'] - seg['start'] for seg in segments)
@@ -632,143 +696,48 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if render_dur <= 0:
                         render_dur = 10.0
 
-                    audio = ffmpeg.input(a_generated).audio
-                    video = ffmpeg.input(v_input).video
+                    # Build font style string for subtitles
+                    align_val = 2 if "Bottom" in sub_position else (5 if "Center" in sub_position else 8)
+                    prim_c = "&H0000FFFF" if "Yellow" in sub_color else ("&H00FFFFFF" if "White" in sub_color else ("&H0000FF00" if "Green" in sub_color else ("&H000000FF" if "Red" in sub_color else "&H00FFFFFF")))
+                    dyn_style = f"FontName={selected_font},FontSize={sub_size},PrimaryColour={prim_c},BackColour=0,Outline={sub_thickness},Alignment={align_val},MarginV=60"
 
-                    v_w_safe, v_h_safe = 1280, 720
-                    if video_ratio == "Original":
-                        try:
-                            probe = ffmpeg.probe(v_input)
-                            v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-                            if v_stream:
-                                v_w_safe = int(v_stream['width'])
-                                v_h_safe = int(v_stream['height'])
-                        except BaseException:
-                            pass
-                    else:
-                        v_w_safe, v_h_safe = (720, 1280) if "9:16" in video_ratio else (1280, 720)
-                        video = ffmpeg.filter(video, 'scale', w=v_w_safe, h=v_h_safe, force_original_aspect_ratio='increase').filter('crop', w=v_w_safe, h=v_h_safe)
+                    logo_file_path = None
+                    if uploaded_logo and not use_text_watermark:
+                        logo_file_path = "temp_logo.png"
+                        with open(logo_file_path, "wb") as f:
+                            f.write(uploaded_logo.getbuffer())
 
-                    v_w_safe = v_w_safe - (v_w_safe % 2)
-                    v_h_safe = v_h_safe - (v_h_safe % 2)
+                    # Use the fixed render function
+                    success, err_msg = render_premium_saas_video(
+                        v_input, a_generated, parsed_timestamps, v_final,
+                        video_ratio, cb_bypass, md_blur, watermark_text,
+                        subtitle_mode, cb_mirror, cb_color, cb_grain, cb_fps,
+                        dyn_style, cb_freeze, logo_file_path,
+                        font_dir=os.path.dirname(selected_font) if os.path.exists(selected_font) else "."
+                    )
+                    if not success:
+                        st.error(f"Render Error: {err_msg}")
 
-                    if cb_bypass:
-                        scale_w = int(v_w_safe * 1.08) - (int(v_w_safe * 1.08) % 2)
-                        scale_h = int(v_h_safe * 1.08) - (int(v_h_safe * 1.08) % 2)
-                        video = ffmpeg.filter(video, 'scale', w=scale_w, h=scale_h).filter('crop', w=v_w_safe, h=v_h_safe)
-
-                    if cb_mirror:
-                        video = ffmpeg.filter(video, 'hflip')
-                    if cb_color:
-                        video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
-                    if cb_grain:
-                        video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
-                    if cb_fps:
-                        video = ffmpeg.filter(video, 'fps', fps=24)
-                    if cb_freeze:
-                        video = ffmpeg.filter(video, 'fps', fps=12)
-
-                    if md_blur and blur_w > 0 and blur_h > 0:
-                        ff_x = max(0, min(int(blur_x), v_w_safe - 2))
-                        ff_y = max(0, min(int(blur_y), v_h_safe - 2))
-                        ff_w = max(4, min(int(blur_w), v_w_safe - ff_x - 1))
-                        ff_h = max(4, min(int(blur_h), v_h_safe - ff_y - 1))
-                        video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
-
-                    if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
-                        wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h_safe > v_w_safe) else 45
-
-                        for i, (start, end, text) in enumerate(parsed_timestamps):
-                            wrapped_lines = textwrap.wrap(text, width=wrap_width) or [text]
-                            max_len = max(len(line) for line in wrapped_lines)
-                            centered_text = "\n".join(line.center(max_len, " ") for line in wrapped_lines)
-
-                            txt_filename = f"temp_sub_{i}.txt"
-                            with open(txt_filename, "w", encoding="utf-8") as tf:
-                                tf.write(centered_text)
-                            abs_txt_filename = os.path.abspath(txt_filename).replace('\\', '/').replace(':', '\\:')
-
-                            y_expr = "(h-text_h)/2" if "Center" in sub_position else ("150" if "Top" in sub_position else "h-text_h-120")
-                            c_str = "yellow" if "Yellow" in sub_color else ("green" if "Green" in sub_color else ("red" if "Red" in sub_color else ("gold" if "Gold" in sub_color else "white")))
-
-                            video = ffmpeg.filter(video, 'drawtext',
-                                                  textfile=abs_txt_filename,
-                                                  fontfile=safe_font_path,
-                                                  fontcolor=c_str,
-                                                  fontsize=sub_size,
-                                                  bordercolor='black',
-                                                  borderw=sub_thickness,
-                                                  x='(w-text_w)/2',
-                                                  y=y_expr,
-                                                  line_spacing=20,
-                                                  text_align='C',
-                                                  enable=f'between(t,{start},{end})')
-
-                    if use_text_watermark and watermark_text:
-                        video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
-
-                    if uploaded_logo:
-                        try:
-                            logo_path = "temp_logo.png"
-                            with open(logo_path, "wb") as f:
-                                f.write(uploaded_logo.getbuffer())
-                            logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
-                            video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
-                        except BaseException:
-                            pass
-
-                    try:
-                        (
-                            ffmpeg.output(video, audio, "temp_dubbed.mp4",
-                                          vcodec='libx264',
-                                          pix_fmt='yuv420p',
-                                          acodec='aac',
-                                          preset='superfast',
-                                          crf=22,
-                                          t=render_dur)
-                            .overwrite_output()
-                            .run(cmd=FFMPEG_BINARY, capture_stderr=True)
-                        )
-                    except ffmpeg.Error as e:
-                        err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
-                        raise Exception(f"Video Rendering Engine Failed:\n```\n{err_msg}\n```")
-
-                    if selected_bgm not in ["None (BGM မထည့်ပါ)"]:
+                    # BGM mix if needed
+                    if success and selected_bgm not in ["None (BGM မထည့်ပါ)"]:
                         st.info("🎵 Applying Cinematic Auto-Ducking BGM...")
                         bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
                         if os.path.exists(bgm_path):
                             try:
-                                main_a = ffmpeg.input("temp_dubbed.mp4").audio
+                                temp_bgm = "temp_bgm.mp4"
+                                v_dur = get_file_duration(v_final)
+                                main_v = ffmpeg.input(v_final).video
+                                main_a = ffmpeg.input(v_final).audio
                                 bgm_a = ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('volume', bgm_volume)
-                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='longest')
-                                ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final,
-                                              vcodec='copy', acodec='aac', t=render_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
-                            except ffmpeg.Error as e:
-                                err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
-                                st.warning(f"BGM Mixing failed, skipping BGM:\n{err_msg}")
-                                shutil.move("temp_dubbed.mp4", v_final)
-                        else:
-                            shutil.move("temp_dubbed.mp4", v_final)
-                    else:
-                        shutil.move("temp_dubbed.mp4", v_final)
+                                ducked = ffmpeg.filter([bgm_a, main_a], 'sidechaincompress', threshold=0.04, ratio=4, attack=50, release=300)
+                                mixed = ffmpeg.filter([main_a, ducked], 'amix', inputs=2, duration='first').filter('volume', 2.0)
+                                ffmpeg.output(main_v, mixed, temp_bgm, vcodec='copy', acodec='aac', t=v_dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                                shutil.move(temp_bgm, v_final)
+                            except Exception as e:
+                                st.warning(f"BGM mixing failed: {e}")
 
-                    try:
-                        for tsuffix, t_val in [("A", min(render_dur * 0.2, 10)), ("B", min(render_dur * 0.5, 20))]:
-                            tname = f"thumb_{tsuffix}_{st.session_state.md_run_id}.jpg"
-                            if cb_thumb_text:
-                                success_thumb, _ = generate_professional_thumbnail(v_input, tname, st.session_state.md_viral_title, t_val, style=md_thumb_style, font_path=selected_font)
-                            else:
-                                ffmpeg.input(v_input, ss=t_val).output(tname, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
-                                success_thumb = os.path.exists(tname)
-                            if success_thumb:
-                                if tsuffix == "A":
-                                    st.session_state.thumb_path_A = tname
-                                else:
-                                    st.session_state.thumb_path_B = tname
-                    except BaseException:
-                        pass
-
-                    st.session_state.render_success = True
+                    if success:
+                        st.session_state.render_success = True
                 except Exception as e:
                     st.error(f"Render Core Error:\n\n{e}")
 
