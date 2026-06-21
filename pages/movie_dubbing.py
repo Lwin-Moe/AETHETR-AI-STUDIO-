@@ -47,9 +47,10 @@ def fmt_time(seconds):
     ms = int((sec % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# 🔴 SYNC FIX: unlimited atempo chaining
-def get_atempo_filter(ratio):
-    if abs(ratio - 1.0) < 0.01:
+# 🔴 SYNC FIX: unlimited atempo chaining (speed up only)
+def get_speed_up_filter(ratio):
+    """Only create atempo chain if ratio > 1 (audio longer than video)."""
+    if ratio <= 1.0:
         return None
     chain = []
     while ratio > 2.0:
@@ -347,8 +348,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"Script Error: {e}")
                 st.stop()
 
-        # ---------- 3️⃣ Generate TTS Audio ----------
-        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync ချိန်ညှိနေပါသည်)"):
+        # ---------- 3️⃣ Generate TTS Audio (FIX: speed up only, never slow down) ----------
+        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
 
             tts_keys = [k.strip() for k in (synergy_key if synergy_key else api_key_input).split(",") if k.strip()]
@@ -391,72 +392,47 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
                         a_dur_raw = get_wav_duration(a_generated)
                         target_dur = st.session_state.md_video_dur
-
-                        # ---------- ROBUST AUDIO SYNC ----------
                         audio_to_process = a_generated
-                        current_dur = a_dur_raw
 
-                        # First atempo pass
-                        if current_dur > 0 and target_dur > 0:
-                            ratio = current_dur / target_dur
-                            if abs(ratio - 1.0) > 0.01:
-                                filt = get_atempo_filter(ratio)
-                                if filt:
-                                    synced_path = "md_audio_synced1.wav"
-                                    cmd_sync = [
-                                        FFMPEG_BINARY, "-y",
-                                        "-i", audio_to_process,
-                                        "-filter:a", filt,
-                                        "-c:a", "pcm_s16le",
-                                        synced_path
-                                    ]
-                                    subprocess.run(cmd_sync, capture_output=True)
-                                    if os.path.exists(synced_path) and os.path.getsize(synced_path) > 100:
-                                        audio_to_process = synced_path
-                                        current_dur = get_wav_duration(audio_to_process)
-                                        st.toast(f"⚡ First sync: {a_dur_raw:.2f}s → {current_dur:.2f}s (target {target_dur:.2f}s)")
+                        # Only speed up if audio is longer than video
+                        if a_dur_raw > target_dur * 1.01:
+                            ratio = a_dur_raw / target_dur
+                            filt = get_speed_up_filter(ratio)
+                            if filt:
+                                synced_path = "md_audio_sped.wav"
+                                subprocess.run([
+                                    FFMPEG_BINARY, "-y",
+                                    "-i", a_generated,
+                                    "-filter:a", filt,
+                                    "-c:a", "pcm_s16le",
+                                    synced_path
+                                ], capture_output=True)
+                                if os.path.exists(synced_path) and os.path.getsize(synced_path) > 100:
+                                    audio_to_process = synced_path
+                                    st.toast(f"⚡ Speed up audio: {a_dur_raw:.1f}s → {target_dur:.1f}s")
 
-                        # Second pass if still off by >0.1s
-                        if abs(current_dur - target_dur) > 0.1 and target_dur > 0:
-                            residual_ratio = current_dur / target_dur
-                            if abs(residual_ratio - 1.0) > 0.01:
-                                filt2 = get_atempo_filter(residual_ratio)
-                                if filt2:
-                                    synced2 = "md_audio_synced2.wav"
-                                    cmd_sync2 = [
-                                        FFMPEG_BINARY, "-y",
-                                        "-i", audio_to_process,
-                                        "-filter:a", filt2,
-                                        "-c:a", "pcm_s16le",
-                                        synced2
-                                    ]
-                                    subprocess.run(cmd_sync2, capture_output=True)
-                                    if os.path.exists(synced2) and os.path.getsize(synced2) > 100:
-                                        audio_to_process = synced2
-                                        current_dur = get_wav_duration(audio_to_process)
-                                        st.toast(f"⚡ Second sync: now {current_dur:.2f}s (target {target_dur:.2f}s)")
-
-                        # Final trim to exact target duration
+                        # Final exact duration: pad with silence if needed, trim if needed
                         final_audio = "md_audio_exact.wav"
-                        trim_filter = f"atrim=0:{target_dur}"
-                        cmd_final = [
+                        # atrim cuts to target_dur, apad ensures it's exactly target_dur (pad with silence if shorter)
+                        filter_complex = f"atrim=0:{target_dur},apad=whole_dur={target_dur}"
+                        subprocess.run([
                             FFMPEG_BINARY, "-y",
                             "-i", audio_to_process,
-                            "-af", trim_filter,
+                            "-af", filter_complex,
                             "-t", str(target_dur),
                             "-c:a", "pcm_s16le",
                             final_audio
-                        ]
-                        subprocess.run(cmd_final, capture_output=True)
+                        ], capture_output=True)
+
                         if os.path.exists(final_audio) and os.path.getsize(final_audio) > 100:
                             a_final_target = final_audio
                         else:
-                            a_final_target = audio_to_process  # fallback
+                            a_final_target = audio_to_process
 
                         st.session_state.md_final_audio_path = a_final_target
                         st.session_state.md_audio_dur = get_wav_duration(a_final_target)
                         success_tts = True
-                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။ (Audio {st.session_state.md_audio_dur:.2f}s)")
+                        st.toast(f"✅ TTS ready. (Audio {st.session_state.md_audio_dur:.2f}s)")
                         break
                     else:
                         last_tts_err = "Generated audio file is missing or empty."
@@ -467,7 +443,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     continue
 
             if not success_tts:
-                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
+                st.error(f"❌ TTS Error: {last_tts_err}")
                 st.stop()
 
         # ---------- 4️⃣ Whisper Timestamps + Script Alignment ----------
@@ -496,7 +472,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 last_sync_err = ""
                 max_retries_per_key = 3
 
-                # Get only segment timestamps from Whisper (ignore text)
                 for idx, w_key in enumerate(whisper_keys, 1):
                     st.toast(f"📝 Whisper Timestamps: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
                     for attempt in range(max_retries_per_key):
@@ -541,29 +516,27 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 # Combine script words with segments
                 script_text = st.session_state.md_generated_script.strip()
                 if not script_text:
-                    st.error("❌ Script is empty. Cannot generate subtitles.")
+                    st.error("❌ Script is empty.")
                     st.stop()
 
-                # Split script into words (Burmese words separated by spaces or ZWSP)
                 words = script_text.split()
                 if not words:
-                    st.error("❌ No words found in script. Check script format.")
+                    st.error("❌ No words found.")
                     st.stop()
 
                 total_dur = sum(seg['end'] - seg['start'] for seg in segments)
                 if total_dur <= 0:
-                    total_dur = st.session_state.md_audio_dur  # fallback
+                    total_dur = st.session_state.md_audio_dur
 
                 N = len(words)
                 raw_srt = ""
                 pointer = 0
-                chunk_size = 3 if sub_short else 6  # sub-chunk size for punchy display
+                chunk_size = 3 if sub_short else 6
 
                 for seg in segments:
                     start = seg['start']
                     end = seg['end']
                     dur = end - start
-                    # Number of words for this segment (at least 1)
                     w_count = max(1, round(N * dur / total_dur))
                     if pointer + w_count > N:
                         w_count = N - pointer
@@ -572,21 +545,15 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
                     chunk_words = words[pointer:pointer + w_count]
                     pointer += w_count
-
                     if not chunk_words:
                         continue
 
-                    # Further split into smaller sub-chunks within the segment
-                    sub_chunks = []
                     for j in range(0, len(chunk_words), chunk_size):
-                        sub_words = chunk_words[j:j + chunk_size]
+                        sub_words = chunk_words[j:j+chunk_size]
                         sub_start = start + (j / len(chunk_words)) * dur
-                        sub_end = start + (min(j + chunk_size, len(chunk_words)) / len(chunk_words)) * dur
-                        sub_chunks.append((sub_start, sub_end, " ".join(sub_words)))
+                        sub_end = start + (min(j+chunk_size, len(chunk_words)) / len(chunk_words)) * dur
+                        raw_srt += f"{j//chunk_size+1}\n{fmt_time(sub_start)} --> {fmt_time(sub_end)}\n{' '.join(sub_words)}\n\n"
 
-                    for idx_chunk, (s_start, s_end, text) in enumerate(sub_chunks, 1):
-                        raw_srt += f"{len(sub_chunks)}\n{fmt_time(s_start)} --> {fmt_time(s_end)}\n{text}\n\n"
-                # End of segments
                 st.session_state.md_generated_srt = raw_srt.strip()
                 pbar.progress(90, text="✅ စာတန်းထိုး အသင့်ဖြစ်ပါပြီ။")
         else:
@@ -600,6 +567,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     # ==========================================
     if st.session_state.md_step1_done:
         st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Final Render</h3>", unsafe_allow_html=True)
+
+        # Pre-calculate safe font path (used for both subtitles and watermark)
+        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
 
         col_r1, col_r2 = st.columns(2)
         with col_r1:
@@ -683,10 +653,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     v_h_safe = v_h_safe - (v_h_safe % 2)
 
                     if cb_bypass:
-                        scale_w = int(v_w_safe * 1.08)
-                        scale_w = scale_w - (scale_w % 2)
-                        scale_h = int(v_h_safe * 1.08)
-                        scale_h = scale_h - (scale_h % 2)
+                        scale_w = int(v_w_safe * 1.08) - (int(v_w_safe * 1.08) % 2)
+                        scale_h = int(v_h_safe * 1.08) - (int(v_h_safe * 1.08) % 2)
                         video = ffmpeg.filter(video, 'scale', w=scale_w, h=scale_h).filter('crop', w=v_w_safe, h=v_h_safe)
 
                     if cb_mirror:
@@ -709,7 +677,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h_safe > v_w_safe) else 45
-                        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
 
                         for i, (start, end, text) in enumerate(parsed_timestamps):
                             wrapped_lines = textwrap.wrap(text, width=wrap_width) or [text]
