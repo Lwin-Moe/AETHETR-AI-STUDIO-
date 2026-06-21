@@ -17,8 +17,6 @@ import openai
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import parse_and_save_real_srt
-# 🔴 အောက်ပါ import ကို ချန်ထားပါ (local function က override လုပ်မည်)
-from core_engines.video_render import render_premium_saas_video as _original_render_video
 from core_engines.video_render import generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
 # 🔴 BULLETPROOF DURATION ENGINE
@@ -49,22 +47,7 @@ def fmt_time(seconds):
     ms = int((sec % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# 🔴 SYNC FIX: unlimited atempo chaining (speed up only)
-def get_speed_up_filter(ratio):
-    """Only create atempo chain if ratio > 1 (audio longer than video)."""
-    if ratio <= 1.0:
-        return None
-    chain = []
-    while ratio > 2.0:
-        chain.append("atempo=2.0")
-        ratio /= 2.0
-    while ratio < 0.5:
-        chain.append("atempo=0.5")
-        ratio /= 0.5
-    chain.append(f"atempo={ratio:.6f}")
-    return ",".join(chain)
-
-# 🔴 FIXED render_premium_saas_video (override imported one)
+# 🔴 FIXED render_premium_saas_video (with unlimited atempo chain, no slowdown)
 def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, ratio,
                                use_bypass=False, use_blur=False, watermark="",
                                subtitle_mode="Both (Burn + SRT)", use_mirror=False,
@@ -155,7 +138,6 @@ def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, ratio,
     except ffmpeg.Error as e:
         return False, str(e)
 
-# Helper function for duration (used inside render)
 def get_file_duration(file_path):
     return get_video_duration(file_path)
 
@@ -332,7 +314,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(str(dl_err))
                 st.stop()
 
-        # ---------- 2️⃣ Generate Script ----------
+        # ---------- 2️⃣ Generate Script (BACK TO SRT FORMAT) ----------
         with st.spinner(f"⏳ [၂/၄] {ai_provider} ဖြင့် ဇာတ်ညွှန်းထုတ်လုပ်နေပါသည်..."):
             pbar.progress(30, text="🤖 ဇာတ်ညွှန်းနှင့် Title ဖန်တီးနေပါသည်...")
             try:
@@ -350,6 +332,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
                 extra_rules += f"\n[CRITICAL TIME LIMIT]: The video is exactly {v_dur:.1f} seconds long. Your Burmese script MUST be concise enough to be read aloud in EXACTLY {v_dur:.1f} seconds. Do NOT write a long essay."
                 extra_rules += "\n[ABSOLUTE REQUIREMENT]: Output ONLY pure Myanmar Unicode script (Burmese characters). NO Romanization, NO English, NO other scripts. The script must be natural spoken Burmese."
+                extra_rules += "\n[OUTPUT FORMAT]: You MUST output the script in valid SRT format with accurate timestamps that match the scenes."
                 extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
 
                 raw_output_text = ""
@@ -435,19 +418,38 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if not success_llm:
                         raise Exception(f"{ai_provider} Error: {last_err}")
 
+                # Extract title and tags
                 title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
                 tags_match = re.search(r'\[TAGS:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
                 st.session_state.md_viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "Viral Movie Recap"
                 st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
-                clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
-                st.session_state.md_generated_script = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
+
+                # Clean up the raw SRT text (remove title/tags)
+                clean_srt_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
+                clean_srt_text = re.sub(r'\[TAGS:.*?\]', '', clean_srt_text, flags=re.IGNORECASE).strip()
+
+                # Parse the SRT into timestamps and speech text
+                parsed_timestamps, speech_text = parse_and_save_real_srt(
+                    clean_srt_text,
+                    "subtitles.srt",
+                    use_fade=False,
+                    max_words=3 if sub_short else 6
+                )
+
+                st.session_state.md_generated_script = clean_srt_text
+                st.session_state.md_generated_srt = clean_srt_text
+
             except Exception as e:
                 st.error(f"Script Error: {e}")
                 st.stop()
 
-        # ---------- 3️⃣ Generate TTS Audio (with tag removal) ----------
+        # ---------- 3️⃣ Generate TTS Audio (remove tags, use speech text) ----------
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
+
+            # 🔴 Remove Synergy tags like [pause=1.0] from speech text before TTS
+            clean_speech = re.sub(r'\[.*?\]', '', speech_text)
+            clean_speech = re.sub(r'\{.*?\}', '', clean_speech)
 
             tts_keys = [k.strip() for k in (synergy_key if synergy_key else api_key_input).split(",") if k.strip()]
             success_tts = False
@@ -459,14 +461,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
 
-                    # 🔴 FIX: Remove Synergy tags like [pause=1.0] before TTS
-                    script_for_tts = st.session_state.md_generated_script
-                    script_for_tts = re.sub(r'\[.*?\]', '', script_for_tts)
-                    script_for_tts = re.sub(r'\{.*?\}', '', script_for_tts)
-
                     if inspect.iscoroutinefunction(generate_tts):
                         asyncio.run(generate_tts(
-                            script_for_tts,
+                            clean_speech,
                             voice_char,
                             a_generated,
                             engine=audio_engine_choice,
@@ -479,7 +476,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         ))
                     else:
                         generate_tts(
-                            script_for_tts,
+                            clean_speech,
                             voice_char,
                             a_generated,
                             engine=audio_engine_choice,
@@ -492,7 +489,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         )
 
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
-                        # No need for atempo here; render_premium_saas_video will handle sync
                         st.session_state.md_final_audio_path = a_generated
                         st.session_state.md_audio_dur = get_wav_duration(a_generated)
                         success_tts = True
@@ -510,116 +506,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
 
-        # ---------- 4️⃣ Whisper Timestamps + Script Alignment ----------
+        # ---------- 4️⃣ Subtitle already generated from SRT, nothing more ----------
         if subtitle_mode != "No Subtitle":
-            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (⚡ Script + Timestamp Alignment)"):
-                pbar.progress(70, text="📝 Whisper Segments ရယူနေပါသည်...")
-
-                a_sync_input = "md_audio_optimized.mp3"
-                try:
-                    subprocess.run([
-                        FFMPEG_BINARY, "-y",
-                        "-i", st.session_state.md_final_audio_path,
-                        "-ar", "16000", "-ac", "1", "-b:a", "32k",
-                        a_sync_input
-                    ], capture_output=True)
-                    if not os.path.exists(a_sync_input):
-                        a_sync_input = st.session_state.md_final_audio_path
-                except Exception:
-                    a_sync_input = st.session_state.md_final_audio_path
-
-                whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
-                whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
-
-                segments = []
-                sync_success = False
-                last_sync_err = ""
-                max_retries_per_key = 3
-
-                for idx, w_key in enumerate(whisper_keys, 1):
-                    st.toast(f"📝 Whisper Timestamps: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
-                    for attempt in range(max_retries_per_key):
-                        try:
-                            client_audio = Groq(api_key=w_key) if w_key.startswith("gsk_") else openai.OpenAI(api_key=w_key)
-                            with open(a_sync_input, "rb") as f:
-                                if w_key.startswith("gsk_"):
-                                    transcription = client_audio.audio.transcriptions.create(
-                                        file=(a_sync_input, f.read()),
-                                        model="whisper-large-v3",
-                                        response_format="verbose_json",
-                                        language="my"
-                                    )
-                                else:
-                                    transcription = client_audio.audio.transcriptions.create(
-                                        model="whisper-1",
-                                        file=f,
-                                        response_format="verbose_json",
-                                        language="my"
-                                    )
-                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-                            if segments:
-                                sync_success = True
-                                st.toast("✅ Timestamps ready.")
-                                break
-                        except Exception as e:
-                            last_sync_err = str(e)
-                            if "500" in str(e) or "Internal Server Error" in str(e):
-                                time.sleep(5)
-                                continue
-                            else:
-                                break
-                    if sync_success:
-                        break
-                    else:
-                        st.toast(f"⚠️ Sync: Key {idx} အလုပ်မလုပ်ပါ။")
-
-                if not sync_success or not segments:
-                    st.error(f"❌ Whisper Timestamp Error: {last_sync_err}")
-                    st.stop()
-
-                # Combine script words with segments
-                script_text = st.session_state.md_generated_script.strip()
-                if not script_text:
-                    st.error("❌ Script is empty. Cannot generate subtitles.")
-                    st.stop()
-
-                words = script_text.split()
-                if not words:
-                    st.error("❌ No words found in script. Check script format.")
-                    st.stop()
-
-                total_dur = sum(seg['end'] - seg['start'] for seg in segments)
-                if total_dur <= 0:
-                    total_dur = st.session_state.md_audio_dur
-
-                N = len(words)
-                raw_srt = ""
-                pointer = 0
-                chunk_size = 3 if sub_short else 6
-
-                for seg in segments:
-                    start = seg['start']
-                    end = seg['end']
-                    dur = end - start
-                    w_count = max(1, round(N * dur / total_dur))
-                    if pointer + w_count > N:
-                        w_count = N - pointer
-                    if w_count <= 0:
-                        break
-
-                    chunk_words = words[pointer:pointer + w_count]
-                    pointer += w_count
-                    if not chunk_words:
-                        continue
-
-                    for j in range(0, len(chunk_words), chunk_size):
-                        sub_words = chunk_words[j:j+chunk_size]
-                        sub_start = start + (j / len(chunk_words)) * dur
-                        sub_end = start + (min(j+chunk_size, len(chunk_words)) / len(chunk_words)) * dur
-                        raw_srt += f"{j//chunk_size+1}\n{fmt_time(sub_start)} --> {fmt_time(sub_end)}\n{' '.join(sub_words)}\n\n"
-
-                st.session_state.md_generated_srt = raw_srt.strip()
-                pbar.progress(90, text="✅ စာတန်းထိုး အသင့်ဖြစ်ပါပြီ။")
+            pbar.progress(75, text="✅ စာတန်းထိုး အသင့်ဖြစ်ပါပြီ။")
         else:
             pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
 
@@ -632,14 +521,14 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     if st.session_state.md_step1_done:
         st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Final Render</h3>", unsafe_allow_html=True)
 
-        # Pre-calculate safe font path (used for both subtitles and watermark)
         safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
 
         col_r1, col_r2 = st.columns(2)
         with col_r1:
             st.markdown("**📝 Interactive SRT Editor**")
             if subtitle_mode != "No Subtitle":
-                edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.md_generated_srt, height=450)
+                edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ပြင်ဆင်နိုင်ပါသည်:",
+                                          value=st.session_state.md_generated_srt, height=450)
             else:
                 edited_srt = ""
                 st.info("💡 Subtitles ပိတ်ထားပါသည်။")
@@ -688,17 +577,27 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
             with st.spinner("⏳ Master Video အား ပေါင်းစပ်ထုတ်လုပ်နေပါသည်..."):
                 try:
+                    # Re-parse the edited SRT
                     parsed_timestamps = []
                     if subtitle_mode != "No Subtitle":
-                        parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
+                        parsed_timestamps, _ = parse_and_save_real_srt(
+                            edited_srt, "subtitles.srt", use_fade=False,
+                            max_words=3 if sub_short else 6
+                        )
 
                     render_dur = st.session_state.md_video_dur
                     if render_dur <= 0:
                         render_dur = 10.0
 
-                    # Build font style string for subtitles
+                    # Build subtitle style
                     align_val = 2 if "Bottom" in sub_position else (5 if "Center" in sub_position else 8)
-                    prim_c = "&H0000FFFF" if "Yellow" in sub_color else ("&H00FFFFFF" if "White" in sub_color else ("&H0000FF00" if "Green" in sub_color else ("&H000000FF" if "Red" in sub_color else "&H00FFFFFF")))
+                    prim_c = "&H0000FFFF" if "Yellow" in sub_color else (
+                        "&H00FFFFFF" if "White" in sub_color else (
+                            "&H0000FF00" if "Green" in sub_color else (
+                                "&H000000FF" if "Red" in sub_color else "&H00FFFFFF"
+                            )
+                        )
+                    )
                     dyn_style = f"FontName={selected_font},FontSize={sub_size},PrimaryColour={prim_c},BackColour=0,Outline={sub_thickness},Alignment={align_val},MarginV=60"
 
                     logo_file_path = None
@@ -707,7 +606,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         with open(logo_file_path, "wb") as f:
                             f.write(uploaded_logo.getbuffer())
 
-                    # Use the fixed render function
                     success, err_msg = render_premium_saas_video(
                         v_input, a_generated, parsed_timestamps, v_final,
                         video_ratio, cb_bypass, md_blur, watermark_text,
@@ -718,7 +616,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if not success:
                         st.error(f"Render Error: {err_msg}")
 
-                    # BGM mix if needed
+                    # BGM
                     if success and selected_bgm not in ["None (BGM မထည့်ပါ)"]:
                         st.info("🎵 Applying Cinematic Auto-Ducking BGM...")
                         bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
