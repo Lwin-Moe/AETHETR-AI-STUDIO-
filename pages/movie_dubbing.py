@@ -21,18 +21,20 @@ def tuples_to_srt(parsed_data):
     """Whisper မှထွက်လာသော ဒေတာများကို Editor တွင်ပြင်နိုင်ရန် SRT String သို့ပြောင်းပေးသည့်စနစ်"""
     srt_str = ""
     for i, (start_raw, end_raw, text) in enumerate(parsed_data, 1):
-        start = float(start_raw)
-        end = float(end_raw)
-        
-        natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-        end = min(start + natural_dur, end)
-        
-        def format_srt_time(seconds):
-            sec = float(seconds)
-            h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+        try:
+            start = float(start_raw)
+            end = float(end_raw)
             
-        srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{str(text).strip()}\n\n"
+            natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+            end = min(start + natural_dur, end)
+            
+            def format_srt_time(seconds):
+                sec = float(seconds)
+                h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
+                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                
+            srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{str(text).strip()}\n\n"
+        except BaseException: pass
     return srt_str.strip()
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
@@ -228,35 +230,43 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             success_tts = False
             last_tts_err = ""
             
-            for current_key in tts_keys:
-                # 🔴 ULTIMATE CRASH CATCHER: BaseException ကို အသုံးပြု၍ Error တိုင်းကို ဖမ်းယူခြင်း
-                try: 
-                    if os.path.exists(a_generated): os.remove(a_generated)
-                    asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
-                    
-                    # 🔴 BULLETPROOF AUDIO VERIFICATION: Error JSON ဖိုင်များကို အသံဖိုင်အဖြစ် အထင်မှားမှုအား ကာကွယ်ခြင်း
-                    valid_audio = False
-                    if os.path.exists(a_generated) and os.path.getsize(a_generated) > 2000:
-                        try:
-                            # FFprobe ကိုသာ အသုံးပြု၍ တကယ့်အသံဖိုင် ဟုတ်မဟုတ်ကို အတိအကျ စစ်ဆေးပါသည်
-                            ffprobe_bin = FFMPEG_BINARY.replace("ffmpeg", "ffprobe")
-                            cmd = [ffprobe_bin, "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", a_generated]
-                            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                            dur_val = float(res.stdout.strip())
-                            if dur_val > 0.5:
-                                st.session_state.md_audio_dur = float(dur_val)
-                                valid_audio = True
-                        except BaseException: pass # တွက်မရလျှင် Error မတက်ဘဲ valid_audio=False အတိုင်းသာ ထားမည်
-                    
-                    if valid_audio:
-                        success_tts = True
-                        break
-                    else:
-                        raise RuntimeError("API returned invalid audio or JSON error.")
-                except BaseException as e: 
-                    last_tts_err = str(e)
-                    continue # နောက် Key တစ်ခုသို့ အလိုအလျောက် တိတ်တဆိတ် ကူးပြောင်းမည်
-                    
+            orig_error = st.error
+            orig_stop = st.stop
+            
+            def mock_error(*args, **kwargs): pass
+            def mock_stop(*args, **kwargs): raise RuntimeError("MOCKED_STOP_EXCEPTION")
+            
+            try:
+                st.error = mock_error
+                st.stop = mock_stop
+                
+                for current_key in tts_keys:
+                    try: 
+                        if os.path.exists(a_generated): os.remove(a_generated)
+                        asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
+                        
+                        valid_audio = False
+                        if os.path.exists(a_generated) and os.path.getsize(a_generated) > 2000:
+                            try:
+                                # 🔴 ERROR-FREE DURATION CHECK
+                                dur_val = get_file_duration(a_generated)
+                                if dur_val is not None and float(dur_val) > 0.5:
+                                    st.session_state.md_audio_dur = float(dur_val)
+                                    valid_audio = True
+                            except BaseException: pass
+                        
+                        if valid_audio:
+                            success_tts = True
+                            break
+                        else:
+                            raise RuntimeError("Invalid Audio Generated")
+                    except BaseException as e: 
+                        last_tts_err = str(e)
+                        continue
+            finally:
+                st.error = orig_error
+                st.stop = orig_stop
+                
             if not success_tts:
                 st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
@@ -300,23 +310,25 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
 
                             for i, segment in enumerate(segments, 1):
-                                start_raw = segment['start'] if isinstance(segment, dict) else segment.start
-                                end_raw = segment['end'] if isinstance(segment, dict) else segment.end
-                                text_raw = segment['text'] if isinstance(segment, dict) else segment.text
-                                
-                                start = float(start_raw)
-                                end = float(end_raw)
-                                text = str(text_raw).strip()
-                                
-                                natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-                                end = min(start + natural_dur, end)
-                                
-                                def format_srt_time(seconds):
-                                    sec = float(seconds)
-                                    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-                                    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                                
-                                raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
+                                try:
+                                    start_raw = segment['start'] if isinstance(segment, dict) else segment.start
+                                    end_raw = segment['end'] if isinstance(segment, dict) else segment.end
+                                    text_raw = segment['text'] if isinstance(segment, dict) else segment.text
+                                    
+                                    start = float(start_raw)
+                                    end = float(end_raw)
+                                    text = str(text_raw).strip()
+                                    
+                                    natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+                                    end = min(start + natural_dur, end)
+                                    
+                                    def format_srt_time(seconds):
+                                        sec = float(seconds)
+                                        h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
+                                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                                    
+                                    raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
+                                except BaseException: pass
                                 
                             st.session_state.md_generated_srt = raw_srt.strip()
                             sync_success = True
