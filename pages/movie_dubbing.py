@@ -8,6 +8,8 @@ import re
 import random
 import textwrap
 import ffmpeg
+import traceback
+import inspect
 from google import genai
 from groq import Groq
 import openai
@@ -241,19 +243,34 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 try: 
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
-                        
-                    asyncio.run(generate_tts(
-                        st.session_state.md_generated_script, 
-                        voice_char, 
-                        a_generated, 
-                        engine=audio_engine_choice, 
-                        ttsmaker_key=key_ttsmaker, 
-                        eleven_key=eleven_key_input, 
-                        custom_eleven_id=custom_eleven_id, 
-                        gemini_key=current_key, 
-                        pitch=pitch_level, 
-                        voice_fx=fx_level
-                    ))
+                    
+                    # 🔧 FIX: check if generate_tts is async or sync and call accordingly
+                    if inspect.iscoroutinefunction(generate_tts):
+                        asyncio.run(generate_tts(
+                            st.session_state.md_generated_script, 
+                            voice_char, 
+                            a_generated, 
+                            engine=audio_engine_choice, 
+                            ttsmaker_key=key_ttsmaker, 
+                            eleven_key=eleven_key_input, 
+                            custom_eleven_id=custom_eleven_id, 
+                            gemini_key=current_key, 
+                            pitch=pitch_level, 
+                            voice_fx=fx_level
+                        ))
+                    else:
+                        generate_tts(
+                            st.session_state.md_generated_script, 
+                            voice_char, 
+                            a_generated, 
+                            engine=audio_engine_choice, 
+                            ttsmaker_key=key_ttsmaker, 
+                            eleven_key=eleven_key_input, 
+                            custom_eleven_id=custom_eleven_id, 
+                            gemini_key=current_key, 
+                            pitch=pitch_level, 
+                            voice_fx=fx_level
+                        )
                     
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
                         st.session_state.md_audio_dur = get_safe_duration(a_generated, st.session_state.md_generated_script)
@@ -279,26 +296,54 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 sync_success = False
                 last_sync_err = ""
                 
-                # 🔴 FACELESS MATCHED: မူရင်း generate_whisper_sync_srt Core Engine ကို အသုံးပြုပါသည်
+                # 🔧 FIX: Optimize audio for Whisper (16kHz mono mp3) & trim if too long
+                a_sync_input = a_generated
+                try:
+                    optimized_audio = "md_audio_optimized.mp3"
+                    ffmpeg.input(a_generated).output(optimized_audio, ar=16000, ac=1, format='mp3', audio_bitrate='32k').overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                    audio_dur = get_safe_duration(optimized_audio, st.session_state.md_generated_script)
+                    # Trim to 8 minutes max to avoid server errors
+                    if audio_dur > 480:
+                        a_sync_input = "md_audio_trimmed.mp3"
+                        ffmpeg.input(optimized_audio).output(a_sync_input, t=480).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                    else:
+                        a_sync_input = optimized_audio
+                except Exception as e:
+                    # Fallback to original audio if optimization fails
+                    a_sync_input = a_generated
+                
+                # Retry loop with backoff for 500 errors
+                max_retries_per_key = 3
                 for w_key in whisper_keys:
-                    try:
-                        success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(
-                            a_generated, 
-                            st.session_state.md_generated_script, 
-                            w_key, 
-                            sub_short
-                        )
-
-                        if success_sync:
-                            st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
-                            sync_success = True
-                            break
-                        else:
-                            last_sync_err = err_sync
-                            continue
-                    except BaseException as e:
-                        last_sync_err = str(e)
-                        continue
+                    for attempt in range(max_retries_per_key):
+                        try:
+                            success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(
+                                a_sync_input, 
+                                st.session_state.md_generated_script, 
+                                w_key, 
+                                sub_short
+                            )
+                            if success_sync:
+                                st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
+                                sync_success = True
+                                break
+                            else:
+                                last_sync_err = err_sync
+                                # If it's a server error, wait and retry
+                                if "500" in str(err_sync) or "Internal Server Error" in str(err_sync):
+                                    time.sleep(5)
+                                    continue
+                                else:
+                                    break  # Other errors: give up this key
+                        except BaseException as e:
+                            last_sync_err = str(e)
+                            if "500" in str(e) or "Internal Server Error" in str(e):
+                                time.sleep(5)
+                                continue
+                            else:
+                                break
+                    if sync_success:
+                        break
                 
                 if not sync_success:
                     st.error(f"❌ Whisper Sync Error: {last_sync_err}")
