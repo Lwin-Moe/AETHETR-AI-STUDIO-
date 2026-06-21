@@ -8,7 +8,6 @@ import re
 import random
 import textwrap
 import ffmpeg
-import traceback
 import inspect
 from google import genai
 from groq import Groq
@@ -244,7 +243,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
                     
-                    # 🔧 FIX: check if generate_tts is async or sync and call accordingly
                     if inspect.iscoroutinefunction(generate_tts):
                         asyncio.run(generate_tts(
                             st.session_state.md_generated_script, 
@@ -290,30 +288,25 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
-                whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
-                
-                sync_success = False
-                last_sync_err = ""
-                
-                # 🔧 FIX: Optimize audio for Whisper (16kHz mono mp3) & trim if too long
                 a_sync_input = a_generated
                 try:
                     optimized_audio = "md_audio_optimized.mp3"
                     ffmpeg.input(a_generated).output(optimized_audio, ar=16000, ac=1, format='mp3', audio_bitrate='32k').overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                     audio_dur = get_safe_duration(optimized_audio, st.session_state.md_generated_script)
-                    # Trim to 8 minutes max to avoid server errors
                     if audio_dur > 480:
                         a_sync_input = "md_audio_trimmed.mp3"
                         ffmpeg.input(optimized_audio).output(a_sync_input, t=480).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                     else:
                         a_sync_input = optimized_audio
-                except Exception as e:
-                    # Fallback to original audio if optimization fails
+                except Exception:
                     a_sync_input = a_generated
                 
-                # Retry loop with backoff for 500 errors
+                whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
+                whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
+                
+                sync_success = False; last_sync_err = ""
                 max_retries_per_key = 3
+                
                 for w_key in whisper_keys:
                     for attempt in range(max_retries_per_key):
                         try:
@@ -329,12 +322,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 break
                             else:
                                 last_sync_err = err_sync
-                                # If it's a server error, wait and retry
                                 if "500" in str(err_sync) or "Internal Server Error" in str(err_sync):
                                     time.sleep(5)
                                     continue
                                 else:
-                                    break  # Other errors: give up this key
+                                    break
                         except BaseException as e:
                             last_sync_err = str(e)
                             if "500" in str(e) or "Internal Server Error" in str(e):
@@ -418,57 +410,91 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
+                    # 🔴 RENDER BUG FIX 1: Scaling Dimensions Validation
+                    v_w, v_h = (1280, 720) # Default
                     if video_ratio == "Original":
                         try:
                             probe = ffmpeg.probe(v_input)
                             v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
-                            v_w, v_h = (int(v_stream['width']), int(v_stream['height'])) if v_stream else (1280, 720)
-                        except BaseException: v_w, v_h = 1280, 720
+                            if v_stream:
+                                v_w = int(v_stream['width'])
+                                v_h = int(v_stream['height'])
+                        except BaseException: pass
                     else:
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
-                        video = ffmpeg.filter(video, 'scale', v_w, v_h, force_original_aspect_ratio='increase').filter('crop', v_w, v_h)
+                        video = ffmpeg.filter(video, 'scale', w=v_w, h=v_h, force_original_aspect_ratio='increase').filter('crop', w=v_w, h=v_h)
                     
-                    if cb_bypass: video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
+                    # 🔴 RENDER BUG FIX 2: Integer strict casting for Crop
+                    if cb_bypass: 
+                        new_w, new_h = int(v_w * 1.08), int(v_h * 1.08)
+                        video = ffmpeg.filter(video, 'scale', w=new_w, h=new_h).filter('crop', w=v_w, h=v_h)
+                        
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     if cb_grain: video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
-                    if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24, round='near')
-                    if cb_freeze: video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
+                    if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24)
+                    if cb_freeze: video = ffmpeg.filter(video, 'fps', fps=12) # Safely replaced minterpolate
                     
+                    # 🔴 RENDER BUG FIX 3: Safe Delogo boundaries
                     if md_blur and blur_w > 0 and blur_h > 0:
-                        ff_x, ff_y = int(max(0, min(blur_x, v_w - 1))), int(max(0, min(blur_y, v_h - 1)))
-                        ff_w, ff_h = int(max(10, min(blur_w, v_w - ff_x))), int(max(10, min(blur_h, v_h - ff_y)))
+                        ff_x = int(max(0, min(blur_x, v_w - 10)))
+                        ff_y = int(max(0, min(blur_y, v_h - 10)))
+                        ff_w = int(max(10, min(blur_w, v_w - ff_x)))
+                        ff_h = int(max(10, min(blur_h, v_h - ff_y)))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
+                    # 🔴 RENDER BUG FIX 4: Absolute Safe Paths for Drawtext
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
-                        safe_font_path = selected_font.replace('\\', '/')
+                        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
+                        
                         for i, (start, end, text) in enumerate(parsed_timestamps):
                             wrapped_lines = textwrap.wrap(text, width=wrap_width) or [text]
                             max_len = max(len(line) for line in wrapped_lines)
                             centered_text = "\n".join(line.center(max_len, " ") for line in wrapped_lines)
-                            with open(f"temp_sub_{i}.txt", "w", encoding="utf-8") as tf: tf.write(centered_text)
+                            
+                            txt_filename = f"temp_sub_{i}.txt"
+                            with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
+                            abs_txt_filename = os.path.abspath(txt_filename).replace('\\', '/').replace(':', '\\:')
+                            
                             y_expr = "(h-text_h)/2" if "Center" in sub_position else ("150" if "Top" in sub_position else "h-text_h-120")
                             c_str = "yellow" if "Yellow" in sub_color else ("green" if "Green" in sub_color else ("red" if "Red" in sub_color else ("gold" if "Gold" in sub_color else "white")))
-                            video = ffmpeg.filter(video, 'drawtext', textfile=f"temp_sub_{i}.txt", fontfile=safe_font_path, fontcolor=c_str, fontsize=sub_size, bordercolor='black', borderw=sub_thickness, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
+                            video = ffmpeg.filter(video, 'drawtext', textfile=abs_txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=sub_size, bordercolor='black', borderw=sub_thickness, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
 
-                    if use_text_watermark and watermark_text: video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
+                    if use_text_watermark and watermark_text: 
+                        video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
+                        
                     if uploaded_logo:
                         try:
-                            with open("temp_logo.png", "wb") as f: f.write(uploaded_logo.getbuffer())
-                            logo_input = ffmpeg.input("temp_logo.png").filter('scale', -1, 75)
+                            logo_path = "temp_logo.png"
+                            with open(logo_path, "wb") as f: f.write(uploaded_logo.getbuffer())
+                            logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
                         except BaseException: pass
 
-                    ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                    # 🔴 RENDER BUG FIX 5: FFmpeg Error explicit capturing & displaying
+                    try:
+                        out_stream = ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur)
+                        out_stream.overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
+                    except ffmpeg.Error as e:
+                        err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
+                        st.error(f"FFmpeg Rendering Error:\n```\n{err_msg}\n```")
+                        st.stop()
                     
+                    # 🔴 RENDER BUG FIX 6: Crash-free BGM mixing
                     if selected_bgm not in ["None (BGM မထည့်ပါ)"]:
                         st.info("🎵 Applying Cinematic Auto-Ducking BGM...")
                         bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
                         if os.path.exists(bgm_path):
-                            ducked = ffmpeg.filter([ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('aresample', 44100).filter('volume', bgm_volume), ffmpeg.input("temp_dubbed.mp4").audio], 'sidechaincompress', threshold=0.04, ratio=4, attack=50, release=300)
-                            mixed = ffmpeg.filter([ffmpeg.input("temp_dubbed.mp4").audio, ducked], 'amix', inputs=2, duration='first').filter('volume', 2.0)
-                            ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                            try:
+                                main_a = ffmpeg.input("temp_dubbed.mp4").audio
+                                bgm_a = ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('volume', bgm_volume)
+                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='first')
+                                ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
+                            except ffmpeg.Error as e:
+                                err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
+                                st.error(f"BGM Mixing FFmpeg Error:\n```\n{err_msg}\n```")
+                                shutil.move("temp_dubbed.mp4", v_final)
                         else: shutil.move("temp_dubbed.mp4", v_final)
                     else: shutil.move("temp_dubbed.mp4", v_final)
 
