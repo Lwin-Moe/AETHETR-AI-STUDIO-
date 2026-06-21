@@ -186,82 +186,140 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
         except Exception as e: st.error(str(e)); st.stop()
 
         pbar.progress(30, text="📝 မူရင်းဘာသာစကားကို နားထောင်နေပါသည်...")
-        try:
-            whisper_key = groq_key_fc if groq_key_fc else (load_key("GROQ_API_KEY") or api_key_input)
-            if whisper_key.startswith("gsk_"):
-                client_audio = Groq(api_key=whisper_key)
-                with open(a_out, "rb") as f: transcription = client_audio.audio.transcriptions.create(file=(a_out, f.read()), model="whisper-large-v3", response_format="verbose_json")
+        
+        # 🔴 WHISPER AUTO-TRY LOGIC ADDED HERE
+        whisper_key_raw = groq_key_fc if groq_key_fc else (load_key("GROQ_API_KEY") or api_key_input)
+        whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
+        sync_success = False
+        last_whisper_err = ""
+
+        for idx, w_key in enumerate(whisper_keys, 1):
+            st.toast(f"📝 Whisper: Key {idx} ဖြင့် မူရင်းအသံအား ဖမ်းယူနေပါသည်...")
+            try:
                 raw_srt = ""
-                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-                for i, segment in enumerate(segments, 1):
-                    start = segment['start'] if isinstance(segment, dict) else segment.start
-                    end = segment['end'] if isinstance(segment, dict) else segment.end
-                    text = segment['text'] if isinstance(segment, dict) else segment.text
-                    def format_srt_time(seconds):
-                        h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds % 1) * 1000)
-                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                    raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text.strip()}\n\n"
-                st.session_state.ts_original_srt = raw_srt
-            else:
-                openai.api_key = whisper_key
-                with open(a_out, "rb") as f: transcript = openai.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt")
-                st.session_state.ts_original_srt = str(transcript)
-        except Exception as e: st.error(f"Whisper Error: {e}"); st.stop()
+                if w_key.startswith("gsk_"):
+                    client_audio = Groq(api_key=w_key)
+                    with open(a_out, "rb") as f: 
+                        transcription = client_audio.audio.transcriptions.create(file=(a_out, f.read()), model="whisper-large-v3", response_format="verbose_json")
+                    segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                    for i, segment in enumerate(segments, 1):
+                        start = segment['start'] if isinstance(segment, dict) else segment.start
+                        end = segment['end'] if isinstance(segment, dict) else segment.end
+                        text = segment['text'] if isinstance(segment, dict) else segment.text
+                        def format_srt_time(seconds):
+                            h = int(seconds // 3600); m = int((seconds % 3600) // 60); s = int(seconds % 60); ms = int((seconds % 1) * 1000)
+                            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                        raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text.strip()}\n\n"
+                    st.session_state.ts_original_srt = raw_srt
+                else:
+                    openai.api_key = w_key
+                    with open(a_out, "rb") as f: 
+                        transcript = openai.audio.transcriptions.create(model="whisper-1", file=f, response_format="srt")
+                    st.session_state.ts_original_srt = str(transcript)
+                
+                sync_success = True
+                st.toast(f"✅ Whisper: Key {idx} အောင်မြင်ပါသည်။")
+                break
+            except Exception as e:
+                last_whisper_err = str(e)
+                st.toast(f"⚠️ Whisper: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။ နောက် Key သို့ ပြောင်းနေပါသည်...")
+                continue
+        
+        if not sync_success:
+            st.error(f"❌ Whisper Error on all keys: {last_whisper_err}")
+            st.stop()
 
         pbar.progress(50, text=f"🌍 {target_lang} သို့ ဘာသာပြန်နေပါသည်...")
-        try:
-            dict_prompt = f"\n[CRITICAL DICTIONARY]: Apply these names exactly. Do not translate them:\n{custom_dict}" if custom_dict.strip() else ""
-            
-            if "Natural" in trans_tone:
-                tone_instructions = (
-                    "Translate contextually and colloquially into highly natural, flowing Burmese speech. "
-                    "DO NOT translate word-by-word literally. Convert foreign idioms and common modern slang into their "
-                    "actual conversational equivalent meaning in Myanmar custom (e.g., 'pulling my leg' should become 'နောက်နေတာ', 'What's up' should be a friendly native greeting). "
-                    "Ensure it sounds perfectly natural when spoken aloud."
-                )
-            elif "Gen-Z" in trans_tone:
-                tone_instructions = (
-                    "Translate using modern Myanmar internet slang, Gen-Z viral words, and emotional expressions. "
-                    "Make it extremely catchy, trendy, and punchy for short-form video consumers on TikTok/Reels."
-                )
-            else:
-                tone_instructions = "Translate accurately and directly."
+        
+        # 🔴 TRANSLATION AUTO-TRY LOGIC ADDED HERE
+        dict_prompt = f"\n[CRITICAL DICTIONARY]: Apply these names exactly. Do not translate them:\n{custom_dict}" if custom_dict.strip() else ""
+        if "Natural" in trans_tone:
+            tone_instructions = (
+                "Translate contextually and colloquially into highly natural, flowing Burmese speech. "
+                "DO NOT translate word-by-word literally. Convert foreign idioms and common modern slang into their "
+                "actual conversational equivalent meaning in Myanmar custom (e.g., 'pulling my leg' should become 'နောက်နေတာ', 'What's up' should be a friendly native greeting). "
+                "Ensure it sounds perfectly natural when spoken aloud."
+            )
+        elif "Gen-Z" in trans_tone:
+            tone_instructions = (
+                "Translate using modern Myanmar internet slang, Gen-Z viral words, and emotional expressions. "
+                "Make it extremely catchy, trendy, and punchy for short-form video consumers on TikTok/Reels."
+            )
+        else:
+            tone_instructions = "Translate accurately and directly."
 
-            translation_prompt = f"""You are an expert Movie Localizer and Subtitle Translator. Translate the following SRT file into {target_lang}.
-            STRICT STRUCTURAL RULES: 
-            1. Maintain the EXACT SRT timestamp format and numbering structure. Do not alter timelines.
-            2. {tone_instructions}
-            3. Do NOT combine multiple small timestamp blocks into one single big paragraph! Keep them independent.
-            4. Do NOT add any extra thoughts, translator notes, or side markdown text outside the pure SRT content.{dict_prompt}
-            5. At the very end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
+        translation_prompt = f"""You are an expert Movie Localizer and Subtitle Translator. Translate the following SRT file into {target_lang}.
+        STRICT STRUCTURAL RULES: 
+        1. Maintain the EXACT SRT timestamp format and numbering structure. Do not alter timelines.
+        2. {tone_instructions}
+        3. Do NOT combine multiple small timestamp blocks into one single big paragraph! Keep them independent.
+        4. Do NOT add any extra thoughts, translator notes, or side markdown text outside the pure SRT content.{dict_prompt}
+        5. At the very end of your response, provide a viral Title on a separate line EXACTLY like this: [TITLE: Your Viral Title]"""
 
-            raw_translation = ""
-            if "Gemini" in ai_provider:
-                client = genai.Client(api_key=api_key_input.split(",")[0])
-                res = client.models.generate_content(model="gemini-2.5-flash", contents=[translation_prompt, f"--- SRT ---\n{st.session_state.ts_original_srt}"])
-                raw_translation = res.text
-            else:
-                client_llm = Groq(api_key=api_key_input) if "Groq" in ai_provider else openai
-                comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-5.5-pro", messages=[{"role": "user", "content": translation_prompt + "\n\n" + st.session_state.ts_original_srt}])
-                raw_translation = comp.choices[0].message.content
+        keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
+        success_translation = False
+        last_trans_err = ""
+        raw_translation = ""
 
-            t_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_translation, re.IGNORECASE)
-            st.session_state.ts_viral_title = re.sub(r'[\[\]]', '', t_match.group(1)).strip() if t_match else "Viral Video"
-            dirty_translated_srt = re.sub(r'\[TITLE:.*?\]', '', raw_translation, flags=re.IGNORECASE).strip()
-            
-            st.session_state.ts_translated_srt = sanitize_and_split_srt(dirty_translated_srt, max_chars=42, video_dur=video_dur)
-            
-        except Exception as e: st.error(f"Translation Error: {e}"); st.stop()
+        if "Gemini" in ai_provider:
+            for idx, current_key in enumerate(keys_list, 1):
+                st.toast(f"🔄 Translation: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
+                try:
+                    client = genai.Client(api_key=current_key)
+                    res = client.models.generate_content(model="gemini-2.5-flash", contents=[translation_prompt, f"--- SRT ---\n{st.session_state.ts_original_srt}"])
+                    raw_translation = res.text
+                    success_translation = True
+                    st.toast(f"✅ Translation: Key {idx} အောင်မြင်ပါသည်။")
+                    break
+                except Exception as e:
+                    last_trans_err = str(e)
+                    st.toast(f"⚠️ Translation: Key {idx} Error တက်သွားပါပြီ။ နောက် Key သို့ ပြောင်းနေပါသည်...")
+                    continue
+        else:
+            for idx, current_key in enumerate(keys_list, 1):
+                st.toast(f"🔄 Translation: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
+                try:
+                    client_llm = Groq(api_key=current_key) if "Groq" in ai_provider else openai.OpenAI(api_key=current_key)
+                    comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-5.5-pro", messages=[{"role": "user", "content": translation_prompt + "\n\n" + st.session_state.ts_original_srt}])
+                    raw_translation = comp.choices[0].message.content
+                    success_translation = True
+                    st.toast(f"✅ Translation: Key {idx} အောင်မြင်ပါသည်။")
+                    break
+                except Exception as e:
+                    last_trans_err = str(e)
+                    st.toast(f"⚠️ Translation: Key {idx} Error တက်သွားပါပြီ။ နောက် Key သို့ ပြောင်းနေပါသည်...")
+                    continue
+                    
+        if not success_translation:
+            st.error(f"❌ Translation Error on all keys: {last_trans_err}")
+            st.stop()
+
+        t_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_translation, re.IGNORECASE)
+        st.session_state.ts_viral_title = re.sub(r'[\[\]]', '', t_match.group(1)).strip() if t_match else "Viral Video"
+        dirty_translated_srt = re.sub(r'\[TITLE:.*?\]', '', raw_translation, flags=re.IGNORECASE).strip()
+        
+        st.session_state.ts_translated_srt = sanitize_and_split_srt(dirty_translated_srt, max_chars=42, video_dur=video_dur)
 
         if gen_thumb:
             pbar.progress(80, text="🎨 Thumbnail ပုံရိပ် ဖန်တီးနေပါသည်...")
-            try:
-                if "Gemini" in ai_provider:
-                    p_res = genai.Client(api_key=api_key_input.split(",")[0]).models.generate_content(model="gemini-2.5-flash", contents=[f"Create a highly detailed, cinematic English image generation prompt (max 30 words) describing this title: {st.session_state.ts_viral_title}. Output ONLY the prompt."])
-                    img_prompt = p_res.text.strip()
-                else:
-                    img_prompt = f"Cinematic epic scene for {st.session_state.ts_viral_title}, 8k resolution, highly detailed"
+            # 🔴 THUMBNAIL PROMPT AUTO-TRY LOGIC ADDED HERE
+            success_thumb_prompt = False
+            img_prompt = ""
+            
+            if "Gemini" in ai_provider:
+                for idx, current_key in enumerate(keys_list, 1):
+                    try:
+                        p_res = genai.Client(api_key=current_key).models.generate_content(model="gemini-2.5-flash", contents=[f"Create a highly detailed, cinematic English image generation prompt (max 30 words) describing this title: {st.session_state.ts_viral_title}. Output ONLY the prompt."])
+                        img_prompt = p_res.text.strip()
+                        success_thumb_prompt = True
+                        break
+                    except Exception:
+                        continue
+            
+            if not success_thumb_prompt:
+                img_prompt = f"Cinematic epic scene for {st.session_state.ts_viral_title}, 8k resolution, highly detailed"
 
+            try:
                 encoded_prompt = urllib.parse.quote(img_prompt)
                 url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1280&height=720&nologo=true"
                 res = requests.get(url, timeout=60)
@@ -393,15 +451,11 @@ def render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key
                     if use_text_watermark and watermark_text:
                         video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
                     
-                    # 🔴 FIX: Missing 'video =' reassignment resolved here. Logo is properly overlayed and preserved.
                     if uploaded_logo:
                         try:
-                            # Save uploaded logo to a temporary file
                             logo_path = "temp_uploaded_logo.png"
                             with open(logo_path, "wb") as f:
                                 f.write(uploaded_logo.getbuffer())
-                            
-                            # Filter and overlay logo onto the existing video stream
                             logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
                         except Exception as e: 
