@@ -14,10 +14,9 @@ import openai
 
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import parse_and_save_real_srt
+from core_engines.subtitle_sync import generate_whisper_sync_srt, parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
-# 🔴 BULLETPROOF DURATION ENGINE: Error လုံးဝမတက်စေရန် အထူးရေးဆွဲထားပါသည်
 def get_safe_duration(file_path, fallback_text=""):
     try:
         probe = ffmpeg.probe(file_path)
@@ -243,13 +242,16 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
                         
-                    # 🔴 BUG FIX: ဖယ်ရှားသင့်သော Parameter များကို အမှန်တကယ် ဖယ်ရှားလိုက်ပါပြီ
                     asyncio.run(generate_tts(
                         st.session_state.md_generated_script, 
                         voice_char, 
                         a_generated, 
                         engine=audio_engine_choice, 
+                        ttsmaker_key=key_ttsmaker, 
+                        eleven_key=eleven_key_input, 
+                        custom_eleven_id=custom_eleven_id, 
                         gemini_key=current_key, 
+                        pitch=pitch_level, 
                         voice_fx=fx_level
                     ))
                     
@@ -271,75 +273,35 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်..."):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
                 
-                sync_audio_path = "md_sync_compressed.m4a"
-                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-c:a", "aac", "-b:a", "32k", "-ar", "16000", "-ac", "1", sync_audio_path], capture_output=True)
-                
-                if not os.path.exists(sync_audio_path) or os.path.getsize(sync_audio_path) < 100:
-                    sync_audio_path = a_generated
-
                 whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
                 whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
                 
-                sync_success = False; last_sync_err = ""
+                sync_success = False
+                last_sync_err = ""
                 
+                # 🔴 FACELESS MATCHED: မူရင်း generate_whisper_sync_srt Core Engine ကို အသုံးပြုပါသည်
                 for w_key in whisper_keys:
-                    for attempt in range(3):
-                        try:
-                            raw_srt = ""
-                            if w_key.startswith("gsk_"):
-                                client_audio = Groq(api_key=w_key)
-                                with open(sync_audio_path, "rb") as f:
-                                    transcription = client_audio.audio.transcriptions.create(
-                                        file=(sync_audio_path, f.read()),
-                                        model="whisper-large-v3",
-                                        response_format="verbose_json"
-                                    )
-                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-                            else:
-                                client_openai = openai.OpenAI(api_key=w_key)
-                                with open(sync_audio_path, "rb") as f:
-                                    transcription = client_openai.audio.transcriptions.create(
-                                        model="whisper-1", 
-                                        file=f, 
-                                        response_format="verbose_json"
-                                    )
-                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+                    try:
+                        success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(
+                            a_generated, 
+                            st.session_state.md_generated_script, 
+                            w_key, 
+                            sub_short
+                        )
 
-                            for i, segment in enumerate(segments, 1):
-                                try:
-                                    start_raw = segment['start'] if isinstance(segment, dict) else segment.start
-                                    end_raw = segment['end'] if isinstance(segment, dict) else segment.end
-                                    text_raw = segment['text'] if isinstance(segment, dict) else segment.text
-                                    
-                                    start = float(start_raw)
-                                    end = float(end_raw)
-                                    text = str(text_raw).strip()
-                                    
-                                    natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-                                    end = min(start + natural_dur, end)
-                                    
-                                    def format_srt_time(seconds):
-                                        sec = float(seconds)
-                                        h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-                                        return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                                    
-                                    raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
-                                except BaseException: pass
-                                
-                            st.session_state.md_generated_srt = raw_srt.strip()
+                        if success_sync:
+                            st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
                             sync_success = True
                             break
-                        except BaseException as e: 
-                            last_sync_err = str(e)
-                            if "500" in last_sync_err or "502" in last_sync_err or "503" in last_sync_err:
-                                time.sleep(3)
-                                continue
-                            else:
-                                break
-                    if sync_success: break
+                        else:
+                            last_sync_err = err_sync
+                            continue
+                    except BaseException as e:
+                        last_sync_err = str(e)
+                        continue
                 
                 if not sync_success:
-                    st.error(f"❌ Whisper Sync Error on all keys: {last_sync_err}")
+                    st.error(f"❌ Whisper Sync Error: {last_sync_err}")
                     st.stop()
         else: pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
 
