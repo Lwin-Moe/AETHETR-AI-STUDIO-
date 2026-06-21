@@ -57,8 +57,8 @@ def get_atempo_filter(ratio):
     chain.append(f"atempo={ratio:.6f}")
     return ",".join(chain)
 
-# 🔴 BURMESE UNICODE DETECTOR
-def is_burmese_script(text, threshold=0.5):
+# 🔴 BURMESE UNICODE DETECTOR (stronger)
+def is_burmese_script(text, threshold=0.6):
     """Check if at least threshold fraction of letters are in Myanmar Unicode range."""
     letters = [c for c in text if c.isalpha()]
     if not letters:
@@ -198,92 +198,117 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 elif "Comedy" in script_style: extra_rules += " [COMEDY]: Make the narrative highly comedic, sarcastic, and funny."
                 if script_curiosity: extra_rules += " [CURIOSITY]: Insert curiosity gaps to retain attention."
                 if script_tone: extra_rules += " [TONE]: Inject strong emotions."
-
                 extra_rules += f"\n[CRITICAL TIME LIMIT]: The video is exactly {v_dur:.1f} seconds long. Your Burmese script MUST be concise enough to be read aloud in EXACTLY {v_dur:.1f} seconds. Do NOT write a long essay."
-                extra_rules += "\n[ABSOLUTE REQUIREMENT - NO EXCEPTIONS]: You MUST write the entire script in Myanmar Unicode script (Burmese characters only, e.g., ကခဂဃ...). Absolutely no Romanization, no English, no other scripts. Even the title and tags must be in Burmese script."
-                extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
 
-                raw_output_text = ""
+                # 🔴 BURMESE FIX: Get English description first, then translate
                 keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
+                english_story = ""
+                success_script = False
 
+                # --- Step A: Get English script / translation ---
                 if "Gemini" in ai_provider:
-                    success_gemini = False; last_err = ""
                     for idx, current_key in enumerate(keys_list, 1):
-                        st.toast(f"🔄 Script: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
+                        st.toast(f"🔄 Script (English): Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
                         try:
                             client = genai.Client(api_key=current_key)
                             target_file = v_input if "Original" in recap_mode else a_extracted
                             media_file = client.files.upload(file=target_file)
                             while "PROCESSING" in str(client.files.get(name=media_file.name).state): time.sleep(2)
-                            gemini_prompt = f"Watch the video carefully. Invent an ORIGINAL, highly engaging storytelling recap in Burmese. Do NOT just translate. STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output pure text narrative. {extra_rules}" if "Original" in recap_mode else f"Listen to the audio. Translate and adapt the text into highly engaging spoken Burmese. STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output pure text narrative. {extra_rules}"
-                            res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, gemini_prompt])
-                            raw_output_text = res.text.strip()
+                            # First get English story
+                            eng_prompt = f"Watch the video carefully. Describe the story in English with a viral narrative style. Keep it concise, around {v_dur:.1f} seconds read time. At the end, provide a viral title and tags in English." if "Original" in recap_mode else f"Listen to the audio. Transcribe/translate it into English. Then create a viral recap in English. Keep it concise. At the end, [TITLE: ...] [TAGS: ...]"
+                            res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, eng_prompt])
+                            english_story = res.text.strip()
                             client.files.delete(name=media_file.name)
-                            success_gemini = True
-                            st.toast(f"✅ Script: Key {idx} အောင်မြင်ပါသည်။")
+                            success_script = True
+                            st.toast(f"✅ English script ready.")
                             break
                         except Exception as e:
                             last_err = str(e)
-                            st.toast(f"⚠️ Script: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။")
+                            st.toast(f"⚠️ Key {idx} Error: {e}")
                             try: client.files.delete(name=media_file.name)
                             except: pass
                             continue
-                    if not success_gemini: raise Exception(f"Gemini Error: {last_err}")
+                    if not success_script: raise Exception(f"Gemini English Error: {last_err}")
                 else:
-                    success_llm = False; last_err = ""
                     for idx, current_key in enumerate(keys_list, 1):
-                        st.toast(f"🔄 Script: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
+                        st.toast(f"🔄 Script (English): Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
                         try:
                             client_llm = Groq(api_key=current_key) if "Groq" in ai_provider else openai.OpenAI(api_key=current_key)
+                            # Get English transcription
                             if "Groq" in ai_provider:
-                                with open(a_extracted, "rb") as file: transcription = client_llm.audio.translations.create(file=(a_extracted, file.read()), model="whisper-large-v3", response_format="verbose_json")
-                                tsrt = "".join([f"{i}\n00:00:00,000 --> 00:00:10,000\n{seg['text']}\n\n" for i, seg in enumerate(transcription.get('segments', []), 1)]) if isinstance(transcription, dict) else str(transcription)
+                                with open(a_extracted, "rb") as file: transcription = client_llm.audio.translations.create(file=(a_extracted, file.read()), model="whisper-large-v3", response_format="text")
+                                eng_text = str(transcription)
                             else:
-                                with open(a_extracted, "rb") as file: ts_res = client_llm.audio.translations.create(model="whisper-1", file=file, response_format="srt")
-                                tsrt = str(ts_res)
-
-                            base_prompt = f"Translate and adapt the English SRT into engaging Burmese. Output pure text narrative. {extra_rules}"
-                            comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": f"{base_prompt} --- SRT --- {tsrt}"}])
-                            raw_output_text = comp.choices[0].message.content
-                            success_llm = True
-                            st.toast(f"✅ Script: Key {idx} အောင်မြင်ပါသည်။")
+                                with open(a_extracted, "rb") as file: ts_res = client_llm.audio.translations.create(model="whisper-1", file=file, response_format="text")
+                                eng_text = str(ts_res)
+                            # Create English story
+                            eng_prompt = f"Turn this transcription into a viral storytelling recap in English. Keep it within {v_dur:.1f} seconds spoken length. At the end, [TITLE: ...] [TAGS: ...]"
+                            comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": f"{eng_prompt}\n\nTranscription: {eng_text}"}])
+                            english_story = comp.choices[0].message.content
+                            success_script = True
+                            st.toast(f"✅ English script ready.")
                             break
                         except Exception as e:
                             last_err = str(e)
-                            st.toast(f"⚠️ Script: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။")
+                            st.toast(f"⚠️ Key {idx} Error: {e}")
                             continue
-                    if not success_llm: raise Exception(f"{ai_provider} Error: {last_err}")
+                    if not success_script: raise Exception(f"{ai_provider} English Error: {last_err}")
 
-                title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
-                tags_match = re.search(r'\[TAGS:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
-                st.session_state.md_viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "Viral Movie Recap"
-                st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
-                clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
-                final_script_candidate = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
-
-                # 🔴 BURMESE SCRIPT FALLBACK
-                if not is_burmese_script(final_script_candidate, threshold=0.3):
-                    st.warning("⚠️ AI မှ မြန်မာယူနီကုဒ် မထုတ်ပေးသေးပါ။ ၂ ခါမြောက် ဘာသာပြန်ဆောင်ရွက်နေပါသည်...")
+                # --- Step B: Translate to Burmese with strict prompt ---
+                burmese_script = ""
+                trans_success = False
+                # Reuse first key for translation (any provider)
+                trans_key = keys_list[0]
+                for attempt in range(3):  # retry translation 3 times
+                    st.toast(f"🔄 Burmese translation attempt {attempt+1}...")
                     try:
-                        # Reuse the first valid API key from the earlier loop
-                        fallback_key = keys_list[0]
+                        # Build translation prompt: we need natural Burmese, no Romanization
+                        trans_prompt = (
+                            "Translate the following English text into natural, fluent Myanmar (Burmese) script.\n"
+                            "ABSOLUTE RULES:\n"
+                            "- Use ONLY Burmese Unicode characters (e.g., ကခဂဃ...).\n"
+                            "- Absolutely NO Romanization, NO English words, NO other scripts.\n"
+                            "- Preserve the viral tone and excitement.\n"
+                            "- Keep the same [TITLE: ...] and [TAGS: ...] format at the end.\n\n"
+                            f"English text:\n{english_story}"
+                        )
                         if "Gemini" in ai_provider:
-                            fb_client = genai.Client(api_key=fallback_key)
-                            fb_prompt = f"Convert the following text to proper Myanmar Unicode script (Burmese). Use only Burmese characters. Do not add any explanation. Output just the script.\n\n{final_script_candidate}"
-                            fb_res = fb_client.models.generate_content(model="gemini-2.5-flash", contents=fb_prompt)
-                            final_script_candidate = fb_res.text.strip()
+                            client = genai.Client(api_key=trans_key)
+                            res = client.models.generate_content(model="gemini-2.5-flash", contents=trans_prompt)
+                            burmese_script = res.text.strip()
                         else:
-                            fb_client = Groq(api_key=fallback_key) if "Groq" in ai_provider else openai.OpenAI(api_key=fallback_key)
-                            fb_prompt = f"Convert the following text to proper Myanmar Unicode script (Burmese). Use only Burmese characters. Do not add any explanation. Output just the script.\n\n{final_script_candidate}"
-                            fb_res = fb_client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": fb_prompt}])
-                            final_script_candidate = fb_res.choices[0].message.content.strip()
-                        st.success("✅ မြန်မာယူနီကုဒ်သို့ အောင်မြင်စွာပြောင်းလဲပြီးပါပြီ။")
-                    except Exception as fb_e:
-                        st.error(f"Fallback Translation Error: {fb_e}")
+                            client = Groq(api_key=trans_key) if "Groq" in ai_provider else openai.OpenAI(api_key=trans_key)
+                            comp = client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": trans_prompt}])
+                            burmese_script = comp.choices[0].message.content.strip()
 
-                st.session_state.md_generated_script = final_script_candidate
+                        # Check quality: must be majority Burmese
+                        if is_burmese_script(burmese_script, threshold=0.6):
+                            trans_success = True
+                            st.toast(f"✅ Burmese translation successful!")
+                            break
+                        else:
+                            st.toast(f"⚠️ Burmese check failed (attempt {attempt+1}). Retrying...")
+                            # Make the prompt even stronger for next retry
+                            trans_prompt = (
+                                "CRITICAL: The previous output contained non-Burmese characters. "
+                                "Now STRICTLY output ONLY Myanmar Unicode script. Do not add any Latin letters or other scripts. "
+                                "Translate this English text to natural Burmese:\n" + english_story
+                            )
+                    except Exception as e:
+                        st.toast(f"⚠️ Translation error: {e}")
+                if not trans_success:
+                    st.error("❌ AI cannot produce proper Burmese script. Please switch to a different AI provider (e.g., Gemini) or check your API quota.")
+                    st.stop()
 
-            except Exception as e: st.error(f"Logic Error: {e}"); st.stop()
+                # Extract title and tags
+                title_match = re.search(r'\[TITLE:\s*(.*?)\]', burmese_script, re.IGNORECASE)
+                tags_match = re.search(r'\[TAGS:\s*(.*?)\]', burmese_script, re.IGNORECASE)
+                st.session_state.md_viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "မြန်မာရုပ်ရှင် ဇာတ်တိုကို"
+                st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movie #myanmar"
+                clean_script = re.sub(r'\[TITLE:.*?\]', '', burmese_script, flags=re.IGNORECASE)
+                st.session_state.md_generated_script = re.sub(r'\[TAGS:.*?\]', '', clean_script, flags=re.IGNORECASE).strip()
+
+            except Exception as e: st.error(f"Script generation failed: {e}"); st.stop()
 
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync ချိန်ညှိနေပါသည်)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
@@ -441,7 +466,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         pbar.progress(100, text="✅ အဆင့် (၁) ပြီးစီးပါပြီ!")
 
     # ==========================================
-    # 🎬 STEP 2: REVIEW & FINAL RENDER
+    # 🎬 STEP 2: REVIEW & FINAL RENDER (unchanged from previous sync fix)
     # ==========================================
     if st.session_state.md_step1_done:
         st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Final Render</h3>", unsafe_allow_html=True)
