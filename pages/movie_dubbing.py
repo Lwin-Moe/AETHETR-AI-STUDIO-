@@ -17,9 +17,9 @@ import openai
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import parse_and_save_real_srt
-from core_engines.video_render import generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
+from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
-# 🔴 BULLETPROOF DURATION ENGINE
+# 🔴 BULLETPROOF DURATION ENGINE: မည်သည့် Error မှ မတက်နိုင်သော Python Native အချိန်တွက်စနစ်
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -35,111 +35,27 @@ def get_video_duration(file_path):
         if match:
             h, m, s = match.groups()
             return int(h) * 3600 + int(m) * 60 + float(s)
-    except Exception:
-        pass
+    except Exception: pass
     return 10.0
 
 def fmt_time(seconds):
     sec = float(seconds)
-    h = int(sec // 3600)
-    m = int((sec % 3600) // 60)
-    s = int(sec % 60)
-    ms = int((sec % 1) * 1000)
+    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# 🔴 FIXED render_premium_saas_video (with unlimited atempo chain, no slowdown)
-def render_premium_saas_video(in_v, in_a, parsed_timestamps, out_v, ratio,
-                               use_bypass=False, use_blur=False, watermark="",
-                               subtitle_mode="Both (Burn + SRT)", use_mirror=False,
-                               use_color=False, use_grain=False, use_fps=False,
-                               sub_style_str="", use_freeze=False, logo_path=None,
-                               font_dir="."):
-    try:
-        a_dur = get_file_duration(in_a)
-        v_max_dur = get_file_duration(in_v)
-
-        safe_srt_path = os.path.abspath("subtitles.srt").replace('\\', '/')
-        safe_srt_path_escaped = safe_srt_path.replace(':', '\\:')
-        safe_font_dir = font_dir.replace('\\', '/').replace(':', '\\:')
-
-        with open("subtitles.srt", "w", encoding="utf-8-sig") as f:
-            for i, (start, end, text) in enumerate(parsed_timestamps, start=1):
-                if start >= v_max_dur:
-                    continue
-                safe_end = min(end, v_max_dur)
-                def fmt_t(s):
-                    return f"{int(s//3600):02d}:{int((s%3600)//60):02d}:{int(s%60):02d},{int((s-int(s))*1000):03d}"
-                f.write(f"{i}\n{fmt_t(start)} --> {fmt_t(safe_end)}\n{text}\n\n")
-
-        video = ffmpeg.input(in_v).video
-        if use_bypass:
-            video = ffmpeg.filter(video, 'scale', '2*trunc(iw*1.08/2)', '2*trunc(ih*1.08/2)').filter('crop', 'iw/1.08', 'ih/1.08')
-        if use_mirror:
-            video = ffmpeg.filter(video, 'hflip')
-        if use_color:
-            video = ffmpeg.filter(video, 'eq', brightness=0.02, contrast=1.05, saturation=1.1)
-        if use_grain:
-            video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
-        if use_fps:
-            video = ffmpeg.filter(video, 'fps', fps=24, round='near')
-        if use_freeze:
-            video = ffmpeg.filter(video, 'minterpolate', fps=12, mi_mode='dup')
-
-        video = ffmpeg.filter(video, 'scale', 'trunc(oh*a/2)*2', 1080, flags='bicubic')
-
-        # ---------- AUDIO SYNC FIX ----------
-        audio = ffmpeg.input(in_a).audio
-
-        # 1. Speed up if audio is longer than video (unlimited atempo chain)
-        if a_dur > v_max_dur * 1.01:
-            ratio = a_dur / v_max_dur
-            chain = []
-            temp_r = ratio
-            while temp_r > 2.0:
-                chain.append("atempo=2.0")
-                temp_r /= 2.0
-            while temp_r < 0.5:
-                chain.append("atempo=0.5")
-                temp_r /= 0.5
-            chain.append(f"atempo={temp_r:.6f}")
-            atempo_filter = ",".join(chain)
-            audio = ffmpeg.filter(audio, 'atempo', atempo_filter)
-
-        # 2. Trim to exact video duration and pad with silence if needed
-        audio = ffmpeg.filter(audio, 'atrim', start=0, end=v_max_dur)
-        audio = ffmpeg.filter(audio, 'apad', whole_dur=v_max_dur)
-
-        # ---------- Visual adjustments ----------
-        if use_blur:
-            video = ffmpeg.filter(video, 'drawbox', x=0, y='ih-90', w='iw', h=90, color='black@0.95', thickness='fill')
-        if ratio == "9:16 (TikTok/Shorts)":
-            video = ffmpeg.filter(video, 'crop', 'min(iw, ih*9/16)', 'ih')
-        elif ratio == "16:9 (YouTube)":
-            video = ffmpeg.filter(video, 'crop', 'iw', 'min(ih, iw*9/16)')
-
-        if watermark:
-            video = ffmpeg.filter(video, 'drawtext', text=watermark, x='w-tw-15', y='15', fontsize=30, fontcolor='white@0.5')
-
-        if logo_path and os.path.exists(logo_path):
-            logo = ffmpeg.input(logo_path)
-            logo = ffmpeg.filter(logo, 'scale', -1, 80)
-            video = ffmpeg.overlay(video, logo, x='W-w-20', y=20)
-
-        if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and os.path.exists("subtitles.srt"):
-            video = ffmpeg.filter(video, 'subtitles', safe_srt_path_escaped,
-                                  charenc='UTF-8', fontsdir=safe_font_dir,
-                                  force_style=sub_style_str)
-
-        out = ffmpeg.output(video, audio, out_v,
-                            vcodec='libx264', acodec='aac', preset='fast', crf=21,
-                            t=v_max_dur)
-        out.run(cmd=FFMPEG_BINARY, overwrite_output=True, capture_stdout=True, capture_stderr=True)
-        return True, "Success"
-    except ffmpeg.Error as e:
-        return False, str(e)
-
-def get_file_duration(file_path):
-    return get_video_duration(file_path)
+# 🔴 SYNC FIX: unlimited atempo chaining function
+def get_atempo_filter(ratio):
+    if abs(ratio - 1.0) < 0.01:
+        return None
+    chain = []
+    while ratio > 2.0:
+        chain.append("atempo=2.0")
+        ratio /= 2.0
+    while ratio < 0.5:
+        chain.append("atempo=0.5")
+        ratio /= 0.5
+    chain.append(f"atempo={ratio:.6f}")
+    return ",".join(chain)
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -158,24 +74,16 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     if "md_video_dur" not in st.session_state: st.session_state.md_video_dur = 10.0
     if "md_final_audio_path" not in st.session_state: st.session_state.md_final_audio_path = "md_audio.wav"
 
-    # ---------- Sidebar ----------
     with st.sidebar:
         st.markdown("---")
-        audio_engine_choice = st.radio("Voice Engine (Dubbing)", [
-            "Edge-TTS (Default Free)",
-            "Google Synergy TTS (Flash 3.1 Preview)",
-            "ElevenLabs (Premium AI)",
-            "TTSMaker (Free API)"
-        ])
+        audio_engine_choice = st.radio("Voice Engine (Dubbing)", ["Edge-TTS (Default Free)", "Google Synergy TTS (Flash 3.1 Preview)", "ElevenLabs (Premium AI)", "TTSMaker (Free API)"])
         synergy_key = ""
         eleven_key_input, custom_eleven_id, key_ttsmaker = "", "", ""
-        if "Synergy" in audio_engine_choice:
-            synergy_key = st.text_input("API Key for Synergy TTS", type="password", value=saved_gemini)
+        if "Synergy" in audio_engine_choice: synergy_key = st.text_input("API Key for Synergy TTS", type="password", value=saved_gemini)
         if "ElevenLabs" in audio_engine_choice:
             eleven_key_input = st.text_input("ElevenLabs API Key", type="password")
             custom_eleven_id = st.text_input("Custom Voice ID")
-        if "TTSMaker" in audio_engine_choice:
-            key_ttsmaker = st.text_input("TTSMaker API Key", type="password")
+        if "TTSMaker" in audio_engine_choice: key_ttsmaker = st.text_input("TTSMaker API Key", type="password")
 
         st.markdown("---")
         video_ratio = st.selectbox("Crop Ratio", ["Original", "9:16 (TikTok/Shorts)", "16:9 (YouTube)"])
@@ -191,27 +99,15 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         st.markdown("<b>🎬 Visual & Subs</b>", unsafe_allow_html=True)
         md_blur = st.checkbox("⬛ Localized Subtitle Blur (မူရင်းစာတန်းကို ကွက်ပြီးဝါးမည်)", value=True)
         cb_thumb_text = st.checkbox("🖼️ Add Viral Title to Thumbnail", value=True)
-        md_thumb_style = st.selectbox("🖼️ Thumbnail Style", [
-            "🔥 Viral TikTok Style",
-            "🎬 Cinematic Movie Poster",
-            "👻 Horror / Mystery",
-            "💎 Premium / Luxury",
-            "⚡ Clean / Minimal"
-        ])
+        md_thumb_style = st.selectbox("🖼️ Thumbnail Style", ["🔥 Viral TikTok Style", "🎬 Cinematic Movie Poster", "👻 Horror / Mystery", "💎 Premium / Luxury", "⚡ Clean / Minimal"])
 
         st.markdown("<b>©️ Brand Watermark</b>", unsafe_allow_html=True)
         uploaded_logo = st.file_uploader("🖼️ Add Logo Image", type=["png", "jpg", "jpeg"])
         use_text_watermark = st.checkbox("✍️ Use Text Watermark instead", value=False)
         watermark_text = st.text_input("Text Watermark", "") if use_text_watermark else ""
 
-        subtitle_mode = st.radio("Subtitle Output", [
-            "Both (Burn + SRT)",
-            "Export SRT File Only",
-            "Burn into Video",
-            "No Subtitle"
-        ])
+        subtitle_mode = st.radio("Subtitle Output", ["Both (Burn + SRT)", "Export SRT File Only", "Burn into Video", "No Subtitle"])
 
-    # ---------- Main input columns ----------
     st.markdown('<div class="setting-panel"><h3>📺 Media Acquisition & Setup</h3>', unsafe_allow_html=True)
     col_in1, col_in2 = st.columns([1, 1])
     with col_in1:
@@ -220,16 +116,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
         st.markdown("<br><div class='sub-box'>", unsafe_allow_html=True)
         st.markdown("<p style='font-weight: bold; color: #38bdf8; font-size: 16px;'>✍️ AI Storytelling & Script Rules</p>", unsafe_allow_html=True)
-        recap_mode = st.radio("🎬 Recap Mode", [
-            "Translate Original Video (မူရင်းကို ဘာသာပြန်မည်)",
-            "Create Original AI Story (ကိုယ်ပိုင်ဇာတ်လမ်းဖန်တီးမည်)"
-        ])
-        script_style = st.selectbox("🎭 Script Style (ဇာတ်ညွှန်း ပုံစံ)", [
-            "Normal (ပုံမှန်အညွှန်း)",
-            "Slang (လူငယ်သုံး/Gen-Z)",
-            "Comedy (ဟာသပြောင်ချော်ချော်)",
-            "Suspense (သည်းထိတ်ရင်ဖို)"
-        ])
+        recap_mode = st.radio("🎬 Recap Mode", ["Translate Original Video (မူရင်းကို ဘာသာပြန်မည်)", "Create Original AI Story (ကိုယ်ပိုင်ဇာတ်လမ်းဖန်တီးမည်)"])
+        script_style = st.selectbox("🎭 Script Style (ဇာတ်ညွှန်း ပုံစံ)", ["Normal (ပုံမှန်အညွှန်း)", "Slang (လူငယ်သုံး/Gen-Z)", "Comedy (ဟာသပြောင်ချော်ချော်)", "Suspense (သည်းထိတ်ရင်ဖို)"])
         script_hook = st.checkbox("🪝 3-Second Viral Hook (အစချီ ဆွဲဆောင်မည်)", value=True)
         script_curiosity = st.checkbox("🤯 Curiosity Gaps (စိတ်ဝင်စားမှု အရှိန်တင်မည်)", value=True)
         script_tone = st.checkbox("🎭 Emotion & Tone (ဇာတ်ကောင်စရိုက် သွင်းမည်)", value=True)
@@ -240,35 +128,22 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         st.markdown("<p style='font-weight: bold; color: #10b981; font-size: 16px;'>🎵 Audio Mixing & Auto-Ducking</p>", unsafe_allow_html=True)
         bgm_options = ["None (BGM မထည့်ပါ)"]
         bgm_files = [f for f in os.listdir("bgm_tracks") if f.endswith(".mp3")] if os.path.exists("bgm_tracks") else []
-        if bgm_files:
-            bgm_options.insert(1, "🤖 Auto (Random Select)")
-            bgm_options.extend(bgm_files)
+        if bgm_files: bgm_options.insert(1, "🤖 Auto (Random Select)"); bgm_options.extend(bgm_files)
         selected_bgm = st.selectbox("🎼 Background Music", bgm_options)
         bgm_volume = st.slider("🔊 BGM Volume", 1, 50, 10) / 100.0
         st.markdown("</div>", unsafe_allow_html=True)
 
     with col_in2:
-        dynamic_options = ["Synergy Puck (Male)", "Synergy Aoede (Female)", "Synergy Charon (Deep)"] if "Synergy" in audio_engine_choice else (
-            ["Adam (Deep)", "Rachel (Female)"] if "ElevenLabs" in audio_engine_choice else (
-                ["TTSMaker Male", "TTSMaker Female"] if "TTSMaker" in audio_engine_choice else [
-                    "ဇော်ဇော် (Male)", "အောင်အောင် (Deep)", "နှင်းနှင်း (Female)"
-                ]))
+        dynamic_options = ["Synergy Puck (Male)", "Synergy Aoede (Female)", "Synergy Charon (Deep)"] if "Synergy" in audio_engine_choice else (["Adam (Deep)", "Rachel (Female)"] if "ElevenLabs" in audio_engine_choice else (["TTSMaker Male", "TTSMaker Female"] if "TTSMaker" in audio_engine_choice else ["ဇော်ဇော် (Male)", "အောင်အောင် (Deep)", "နှင်းနှင်း (Female)"]))
         voice_char = st.selectbox("Select Character Voice", dynamic_options, index=0)
         pitch_level = st.slider("🎙️ Voice Pitch", min_value=-30, max_value=30, value=0, step=5)
-        fx_level = st.selectbox("🎧 Cinematic Voice FX", [
-            "None", "🎙️ Epic Trailer Voice", "📻 Walkie-Talkie", "🏛️ Cinematic Reverb",
-            "👹 Demon / Monster", "🤫 ASMR / Whisper", "🤖 Robot / Cyborg",
-            "📞 Old Telephone", "⛰️ Deep Cave Echo", "🌊 Underwater / Muffled",
-            "🔥 Motivation", "👻 Horror", "🌀 Spatial 3D Audio", "🎭 Multi-Persona"
-        ])
+        fx_level = st.selectbox("🎧 Cinematic Voice FX", ["None", "🎙️ Epic Trailer Voice", "📻 Walkie-Talkie", "🏛️ Cinematic Reverb", "👹 Demon / Monster", "🤫 ASMR / Whisper", "🤖 Robot / Cyborg", "📞 Old Telephone", "⛰️ Deep Cave Echo", "🌊 Underwater / Muffled", "🔥 Motivation", "👻 Horror", "🌀 Spatial 3D Audio", "🎭 Multi-Persona"])
 
         st.markdown("<div class='sub-box'>", unsafe_allow_html=True)
         st.markdown("<p style='font-weight: bold; color: #818cf8; font-size: 16px;'>📝 Subtitle Pro Settings</p>", unsafe_allow_html=True)
         selected_font = st.selectbox("🔤 Font Style", available_fonts, index=0)
         sub_position = st.selectbox("📍 Position", ["Bottom", "Center", "Top"])
-        sub_color = st.selectbox("🎨 Color", [
-            "Yellow Text", "White Text", "Neon Green Text", "Red Text", "Gold Text"
-        ])
+        sub_color = st.selectbox("🎨 Color", ["Yellow Text", "White Text", "Neon Green Text", "Red Text", "Gold Text"])
         sub_size = st.slider("🔠 Font Size", 16, 50, 28)
         sub_thickness = st.slider("✒️ Outline Thickness", 1.0, 5.0, 2.5)
         sub_short = st.checkbox("✂️ Short & Punchy (Hormozi)", value=True)
@@ -436,20 +311,24 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     max_words=3 if sub_short else 6
                 )
 
-                st.session_state.md_generated_script = clean_srt_text
+                st.session_state.md_generated_script = speech_text
                 st.session_state.md_generated_srt = clean_srt_text
 
             except Exception as e:
                 st.error(f"Script Error: {e}")
                 st.stop()
 
-        # ---------- 3️⃣ Generate TTS Audio (remove tags, use speech text) ----------
-        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync)"):
+        # ---------- 3️⃣ Generate TTS Audio (Aggressively filter out English Action tags) ----------
+        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync ချိန်ညှိနေပါသည်)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
 
-            # 🔴 Remove Synergy tags like [pause=1.0] from speech text before TTS
-            clean_speech = re.sub(r'\[.*?\]', '', speech_text)
+            # 🔴 ENGLISH TAGS BUG FIX: TTS ဆီ မပို့ခင် အင်္ဂလိပ်စာလုံးများကို အကြွင်းမဲ့ ဖယ်ရှားပစ်ပါသည်
+            clean_speech = st.session_state.md_generated_script
+            clean_speech = re.sub(r'\[.*?\]', '', clean_speech)
             clean_speech = re.sub(r'\{.*?\}', '', clean_speech)
+            clean_speech = re.sub(r'\(.*?\)', '', clean_speech)
+            clean_speech = re.sub(r'[a-zA-Z]', '', clean_speech) # Action, Excited ကဲ့သို့ အင်္ဂလိပ်စာလုံးများ လုံးဝပါခွင့်မပေးပါ
+            clean_speech = re.sub(r'\s+', ' ', clean_speech).strip()
 
             tts_keys = [k.strip() for k in (synergy_key if synergy_key else api_key_input).split(",") if k.strip()]
             success_tts = False
@@ -463,7 +342,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
                     if inspect.iscoroutinefunction(generate_tts):
                         asyncio.run(generate_tts(
-                            clean_speech,
+                            clean_speech, # <--- Cleaned script passed here
                             voice_char,
                             a_generated,
                             engine=audio_engine_choice,
@@ -489,10 +368,35 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         )
 
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
-                        st.session_state.md_final_audio_path = a_generated
-                        st.session_state.md_audio_dur = get_wav_duration(a_generated)
+                        a_dur_raw = get_wav_duration(a_generated)
+
+                        # 🔴 SYNC FIX: atempo without clamp, then trim/pad to exact video duration
+                        a_final_target = a_generated
+                        if a_dur_raw > 0 and v_dur > 0:
+                            ratio = a_dur_raw / v_dur
+                            # unlimited atempo using chaining
+                            filt = get_atempo_filter(ratio)
+                            if filt:
+                                synced_audio = "md_audio_synced.wav"
+                                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-filter:a", filt, synced_audio], capture_output=True)
+                                if os.path.exists(synced_audio) and os.path.getsize(synced_audio) > 100:
+                                    a_final_target = synced_audio
+                                else:
+                                    a_final_target = a_generated  # fallback
+                            else:
+                                a_final_target = a_generated  # no sync needed
+
+                            # 🔴 SYNC FIX: now trim/pad to exact video duration
+                            exact_audio = "md_audio_exact.wav"
+                            pad_filter = f"apad=whole_dur={v_dur}"
+                            subprocess.run([FFMPEG_BINARY, "-y", "-i", a_final_target, "-af", pad_filter, "-t", str(v_dur), exact_audio], capture_output=True)
+                            if os.path.exists(exact_audio) and os.path.getsize(exact_audio) > 100:
+                                a_final_target = exact_audio
+
+                        st.session_state.md_final_audio_path = a_final_target
+                        st.session_state.md_audio_dur = get_wav_duration(a_final_target)
                         success_tts = True
-                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။ (Audio {st.session_state.md_audio_dur:.2f}s)")
+                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။")
                         break
                     else:
                         last_tts_err = "Generated audio file is missing or empty."
@@ -506,11 +410,79 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
 
-        # ---------- 4️⃣ Subtitle already generated from SRT, nothing more ----------
         if subtitle_mode != "No Subtitle":
-            pbar.progress(75, text="✅ စာတန်းထိုး အသင့်ဖြစ်ပါပြီ။")
-        else:
-            pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
+            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (V52 Auto Interpolation)"):
+                pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
+
+                # 🔴 SYNC FIX: use the exact final audio for whisper transcription
+                a_sync_input = "md_audio_optimized.mp3"
+                try:
+                    subprocess.run([FFMPEG_BINARY, "-y", "-i", st.session_state.md_final_audio_path, "-ar", "16000", "-ac", "1", "-b:a", "32k", a_sync_input], capture_output=True)
+                    if not os.path.exists(a_sync_input): a_sync_input = st.session_state.md_final_audio_path
+                except Exception:
+                    a_sync_input = st.session_state.md_final_audio_path
+
+                whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
+                whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
+
+                sync_success = False; last_sync_err = ""
+                max_retries_per_key = 3
+
+                for idx, w_key in enumerate(whisper_keys, 1):
+                    st.toast(f"📝 Sync: Key {idx} ဖြင့် စာတန်းထိုး ချိန်ညှိနေပါသည်...")
+                    for attempt in range(max_retries_per_key):
+                        try:
+                            raw_srt_str = ""
+                            chunk_idx = 1
+                            client_audio = Groq(api_key=w_key) if w_key.startswith("gsk_") else openai.OpenAI(api_key=w_key)
+
+                            with open(a_sync_input, "rb") as f:
+                                if w_key.startswith("gsk_"):
+                                    transcription = client_audio.audio.transcriptions.create(
+                                        file=(a_sync_input, f.read()),
+                                        model="whisper-large-v3",
+                                        response_format="verbose_json"
+                                    )
+                                else:
+                                    transcription = client_audio.audio.transcriptions.create(
+                                        model="whisper-1",
+                                        file=f,
+                                        response_format="verbose_json"
+                                    )
+
+                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+
+                            # 🔴 V52 INTERPOLATION: စာတန်းထိုးကို သေသပ်စွာခွဲ၍ အချိန်နှင့် အတိအကျ ကပ်ပေးသောစနစ်
+                            for segment in segments:
+                                start = float(segment['start'] if isinstance(segment, dict) else getattr(segment, 'start', 0.0))
+                                end = float(segment['end'] if isinstance(segment, dict) else getattr(segment, 'end', 0.0))
+                                text = str(segment['text'] if isinstance(segment, dict) else getattr(segment, 'text', '')).strip()
+
+                                words = text.split()
+                                chunk_size = 3 if sub_short else 6
+                                for j in range(0, len(words), chunk_size):
+                                    chunk = " ".join(words[j:j+chunk_size])
+                                    chunk_start = start + (j / len(words)) * (end - start)
+                                    chunk_end = start + (min(j + chunk_size, len(words)) / len(words)) * (end - start)
+
+                                    raw_srt_str += f"{chunk_idx}\n{fmt_time(chunk_start)} --> {fmt_time(chunk_end)}\n{chunk}\n\n"
+                                    chunk_idx += 1
+
+                            st.session_state.md_generated_srt = raw_srt_str.strip()
+                            sync_success = True
+                            st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
+                            break
+                        except Exception as e:
+                            last_sync_err = str(e)
+                            if "500" in str(e) or "Internal Server Error" in str(e):
+                                time.sleep(5); continue
+                            else: break
+                    if sync_success: break
+                    else: st.toast(f"⚠️ Sync: Key {idx} အလုပ်မလုပ်ပါ။")
+
+                if not sync_success:
+                    st.error(f"❌ Whisper Sync Error: {last_sync_err}"); st.stop()
+        else: pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
 
         st.session_state.md_step1_done = True
         pbar.progress(100, text="✅ အဆင့် (၁) ပြီးစီးပါပြီ!")
@@ -521,14 +493,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     if st.session_state.md_step1_done:
         st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Final Render</h3>", unsafe_allow_html=True)
 
-        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
-
         col_r1, col_r2 = st.columns(2)
         with col_r1:
             st.markdown("**📝 Interactive SRT Editor**")
             if subtitle_mode != "No Subtitle":
-                edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ပြင်ဆင်နိုင်ပါသည်:",
-                                          value=st.session_state.md_generated_srt, height=450)
+                edited_srt = st.text_area("စာတန်းထိုးများကို စိတ်ကြိုက် ပြင်ဆင်နိုင်ပါသည်:", value=st.session_state.md_generated_srt, height=450)
             else:
                 edited_srt = ""
                 st.info("💡 Subtitles ပိတ်ထားပါသည်။")
@@ -585,57 +554,115 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             max_words=3 if sub_short else 6
                         )
 
+                    # 🔴 SYNC FIX: render duration = video duration only (audio is already exact)
                     render_dur = st.session_state.md_video_dur
-                    if render_dur <= 0:
-                        render_dur = 10.0
+                    if render_dur <= 0: render_dur = 10.0
 
-                    # Build subtitle style
-                    align_val = 2 if "Bottom" in sub_position else (5 if "Center" in sub_position else 8)
-                    prim_c = "&H0000FFFF" if "Yellow" in sub_color else (
-                        "&H00FFFFFF" if "White" in sub_color else (
-                            "&H0000FF00" if "Green" in sub_color else (
-                                "&H000000FF" if "Red" in sub_color else "&H00FFFFFF"
-                            )
+                    audio = ffmpeg.input(a_generated).audio
+                    video = ffmpeg.input(v_input).video
+
+                    v_w_safe, v_h_safe = 1280, 720
+                    if video_ratio == "Original":
+                        try:
+                            probe = ffmpeg.probe(v_input)
+                            v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
+                            if v_stream:
+                                v_w_safe = int(v_stream['width'])
+                                v_h_safe = int(v_stream['height'])
+                        except BaseException: pass
+                    else:
+                        v_w_safe, v_h_safe = (720, 1280) if "9:16" in video_ratio else (1280, 720)
+                        video = ffmpeg.filter(video, 'scale', w=v_w_safe, h=v_h_safe, force_original_aspect_ratio='increase').filter('crop', w=v_w_safe, h=v_h_safe)
+
+                    v_w_safe = v_w_safe - (v_w_safe % 2)
+                    v_h_safe = v_h_safe - (v_h_safe % 2)
+
+                    if cb_bypass:
+                        scale_w = int(v_w_safe * 1.08); scale_w = scale_w - (scale_w % 2)
+                        scale_h = int(v_h_safe * 1.08); scale_h = scale_h - (scale_h % 2)
+                        video = ffmpeg.filter(video, 'scale', w=scale_w, h=scale_h).filter('crop', w=v_w_safe, h=v_h_safe)
+
+                    if cb_mirror: video = ffmpeg.filter(video, 'hflip')
+                    if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
+                    if cb_grain: video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
+                    if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24)
+                    if cb_freeze: video = ffmpeg.filter(video, 'fps', fps=12)
+
+                    if md_blur and blur_w > 0 and blur_h > 0:
+                        ff_x = max(0, min(int(blur_x), v_w_safe - 2))
+                        ff_y = max(0, min(int(blur_y), v_h_safe - 2))
+                        ff_w = max(4, min(int(blur_w), v_w_safe - ff_x - 1))
+                        ff_h = max(4, min(int(blur_h), v_h_safe - ff_y - 1))
+                        video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
+
+                    if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
+                        wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h_safe > v_w_safe) else 45
+                        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
+
+                        for i, (start, end, text) in enumerate(parsed_timestamps):
+                            wrapped_lines = textwrap.wrap(text, width=wrap_width) or [text]
+                            max_len = max(len(line) for line in wrapped_lines)
+                            centered_text = "\n".join(line.center(max_len, " ") for line in wrapped_lines)
+
+                            txt_filename = f"temp_sub_{i}.txt"
+                            with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
+                            abs_txt_filename = os.path.abspath(txt_filename).replace('\\', '/').replace(':', '\\:')
+
+                            y_expr = "(h-text_h)/2" if "Center" in sub_position else ("150" if "Top" in sub_position else "h-text_h-120")
+                            c_str = "yellow" if "Yellow" in sub_color else ("green" if "Green" in sub_color else ("red" if "Red" in sub_color else ("gold" if "Gold" in sub_color else "white")))
+
+                            video = ffmpeg.filter(video, 'drawtext', textfile=abs_txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=sub_size, bordercolor='black', borderw=sub_thickness, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
+
+                    if use_text_watermark and watermark_text:
+                        video = ffmpeg.filter(video, 'drawtext', text=watermark_text, x='w-tw-30', y='30', fontsize=26, fontcolor='white@0.4', fontfile=safe_font_path)
+
+                    if uploaded_logo:
+                        try:
+                            logo_path = "temp_logo.png"
+                            with open(logo_path, "wb") as f: f.write(uploaded_logo.getbuffer())
+                            logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
+                            video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
+                        except BaseException: pass
+
+                    try:
+                        # 🔴 SYNC FIX: use render_dur (which is video_dur) as the output length
+                        (
+                            ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=render_dur)
+                            .overwrite_output()
+                            .run(cmd=FFMPEG_BINARY, capture_stderr=True)
                         )
-                    )
-                    dyn_style = f"FontName={selected_font},FontSize={sub_size},PrimaryColour={prim_c},BackColour=0,Outline={sub_thickness},Alignment={align_val},MarginV=60"
+                    except ffmpeg.Error as e:
+                        err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
+                        raise Exception(f"Video Rendering Engine Failed:\n```\n{err_msg}\n```")
 
-                    logo_file_path = None
-                    if uploaded_logo and not use_text_watermark:
-                        logo_file_path = "temp_logo.png"
-                        with open(logo_file_path, "wb") as f:
-                            f.write(uploaded_logo.getbuffer())
-
-                    success, err_msg = render_premium_saas_video(
-                        v_input, a_generated, parsed_timestamps, v_final,
-                        video_ratio, cb_bypass, md_blur, watermark_text,
-                        subtitle_mode, cb_mirror, cb_color, cb_grain, cb_fps,
-                        dyn_style, cb_freeze, logo_file_path,
-                        font_dir=os.path.dirname(selected_font) if os.path.exists(selected_font) else "."
-                    )
-                    if not success:
-                        st.error(f"Render Error: {err_msg}")
-
-                    # BGM
-                    if success and selected_bgm not in ["None (BGM မထည့်ပါ)"]:
+                    if selected_bgm not in ["None (BGM မထည့်ပါ)"]:
                         st.info("🎵 Applying Cinematic Auto-Ducking BGM...")
                         bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
                         if os.path.exists(bgm_path):
                             try:
-                                temp_bgm = "temp_bgm.mp4"
-                                v_dur = get_file_duration(v_final)
-                                main_v = ffmpeg.input(v_final).video
-                                main_a = ffmpeg.input(v_final).audio
+                                main_a = ffmpeg.input("temp_dubbed.mp4").audio
                                 bgm_a = ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('volume', bgm_volume)
-                                ducked = ffmpeg.filter([bgm_a, main_a], 'sidechaincompress', threshold=0.04, ratio=4, attack=50, release=300)
-                                mixed = ffmpeg.filter([main_a, ducked], 'amix', inputs=2, duration='first').filter('volume', 2.0)
-                                ffmpeg.output(main_v, mixed, temp_bgm, vcodec='copy', acodec='aac', t=v_dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
-                                shutil.move(temp_bgm, v_final)
-                            except Exception as e:
-                                st.warning(f"BGM mixing failed: {e}")
+                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='longest')
+                                # 🔴 SYNC FIX: also trim BGM mix to video duration
+                                ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=render_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
+                            except ffmpeg.Error as e:
+                                err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
+                                st.warning(f"BGM Mixing failed, skipping BGM:\n{err_msg}")
+                                shutil.move("temp_dubbed.mp4", v_final)
+                        else: shutil.move("temp_dubbed.mp4", v_final)
+                    else: shutil.move("temp_dubbed.mp4", v_final)
 
-                    if success:
-                        st.session_state.render_success = True
+                    try:
+                        for tsuffix, t_val in [("A", min(render_dur*0.2, 10)), ("B", min(render_dur*0.5, 20))]:
+                            tname = f"thumb_{tsuffix}_{st.session_state.md_run_id}.jpg"
+                            if cb_thumb_text: success_thumb, _ = generate_professional_thumbnail(v_input, tname, st.session_state.md_viral_title, t_val, style=md_thumb_style, font_path=selected_font)
+                            else: ffmpeg.input(v_input, ss=t_val).output(tname, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True); success_thumb = os.path.exists(tname)
+                            if success_thumb:
+                                if tsuffix == "A": st.session_state.thumb_path_A = tname
+                                else: st.session_state.thumb_path_B = tname
+                    except BaseException: pass
+
+                    st.session_state.render_success = True
                 except Exception as e:
                     st.error(f"Render Core Error:\n\n{e}")
 
