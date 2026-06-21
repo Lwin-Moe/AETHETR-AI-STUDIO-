@@ -198,7 +198,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             try: client.files.delete(name=media_file.name)
                             except: pass
                             continue
-                    if not success_gemini: raise Exception(f"Gemini API Error on all keys: {last_err}")
+                    if not success_gemini: raise Exception(f"Gemini API Limit Error on all keys: {last_err}")
                 else:
                     success_llm = False; last_err = ""
                     for current_key in keys_list:
@@ -243,16 +243,13 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
                         
+                    # 🔴 BUG FIX: ဖယ်ရှားသင့်သော Parameter များကို အမှန်တကယ် ဖယ်ရှားလိုက်ပါပြီ
                     asyncio.run(generate_tts(
                         st.session_state.md_generated_script, 
                         voice_char, 
                         a_generated, 
                         engine=audio_engine_choice, 
-                        ttsmaker_key=key_ttsmaker, 
-                        eleven_key=eleven_key_input, 
-                        custom_eleven_id=custom_eleven_id, 
                         gemini_key=current_key, 
-                        pitch=pitch_level, 
                         voice_fx=fx_level
                     ))
                     
