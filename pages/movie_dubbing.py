@@ -15,7 +15,7 @@ import openai
 
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import generate_whisper_sync_srt, parse_and_save_real_srt
+from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
 def get_safe_duration(file_path, fallback_text=""):
@@ -26,31 +26,13 @@ def get_safe_duration(file_path, fallback_text=""):
     except BaseException:
         return float(len(fallback_text) * 0.12) if fallback_text else 10.0
 
-def tuples_to_srt(parsed_data):
-    srt_str = ""
-    for i, (start_raw, end_raw, text) in enumerate(parsed_data, 1):
-        try:
-            start = float(start_raw)
-            end = float(end_raw)
-            
-            natural_dur = max(1.5, min(3.5, len(text) * 0.12))
-            end = min(start + natural_dur, end)
-            
-            def format_srt_time(seconds):
-                sec = float(seconds)
-                h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
-                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                
-            srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{str(text).strip()}\n\n"
-        except BaseException: pass
-    return srt_str.strip()
-
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
     st.markdown("နိုင်ငံခြား ဇာတ်လမ်းတိုများကို မြန်မာလို အလိုအလျောက် ဘာသာပြန်ပြီး အသံထည့်ပါ။ (2-Step Interactive Workflow)")
 
     available_fonts = get_available_fonts()
     
+    # 📌 Initialize Core States to prevent UI Crash
     if "md_step1_done" not in st.session_state: st.session_state.md_step1_done = False
     if "md_generated_srt" not in st.session_state: st.session_state.md_generated_srt = ""
     if "md_generated_script" not in st.session_state: st.session_state.md_generated_script = ""
@@ -60,6 +42,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     if "md_run_id" not in st.session_state: st.session_state.md_run_id = str(int(time.time()))
     if "md_preview_frame" not in st.session_state: st.session_state.md_preview_frame = "md_preview.jpg"
     if "md_audio_dur" not in st.session_state: st.session_state.md_audio_dur = 0.0
+    if "final_video_path" not in st.session_state: st.session_state.final_video_path = ""
+    if "render_success" not in st.session_state: st.session_state.render_success = False
 
     with st.sidebar:
         st.markdown("---")
@@ -303,6 +287,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     optimized_audio = "md_audio_optimized.mp3"
                     ffmpeg.input(a_generated).output(optimized_audio, ar=16000, ac=1, format='mp3', audio_bitrate='32k').overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                     audio_dur = get_safe_duration(optimized_audio, st.session_state.md_generated_script)
+                    # 🔴 500 Error ကာကွယ်ရန် ဗီဒီယိုရှည်ပါက (၈) မိနစ်ဖြတ်၍ ပို့ပါမည်။
                     if audio_dur > 480:
                         a_sync_input = "md_audio_trimmed.mp3"
                         ffmpeg.input(optimized_audio).output(a_sync_input, t=480).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
@@ -317,28 +302,54 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 sync_success = False; last_sync_err = ""
                 max_retries_per_key = 3
                 
+                # 🔴 PERFECT SUBTITLE FIX: Inline API Call (To guarantee accurate millisecond syncing)
                 for idx, w_key in enumerate(whisper_keys, 1):
                     st.toast(f"📝 Sync: Key {idx} ဖြင့် စာတန်းထိုး ချိန်ညှိနေပါသည်...")
                     for attempt in range(max_retries_per_key):
                         try:
-                            success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(
-                                a_sync_input, 
-                                st.session_state.md_generated_script, 
-                                w_key, 
-                                sub_short
-                            )
-                            if success_sync:
-                                st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
-                                sync_success = True
-                                st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
-                                break
+                            raw_srt = ""
+                            if w_key.startswith("gsk_"):
+                                client_audio = Groq(api_key=w_key)
+                                with open(a_sync_input, "rb") as f:
+                                    transcription = client_audio.audio.transcriptions.create(
+                                        file=(a_sync_input, f.read()),
+                                        model="whisper-large-v3",
+                                        response_format="verbose_json"
+                                    )
+                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
                             else:
-                                last_sync_err = err_sync
-                                if "500" in str(err_sync) or "Internal Server Error" in str(err_sync):
-                                    time.sleep(5)
-                                    continue
-                                else:
-                                    break  
+                                client_openai = openai.OpenAI(api_key=w_key)
+                                with open(a_sync_input, "rb") as f:
+                                    transcription = client_openai.audio.transcriptions.create(
+                                        model="whisper-1", 
+                                        file=f, 
+                                        response_format="verbose_json"
+                                    )
+                                segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
+
+                            for i, segment in enumerate(segments, 1):
+                                start_raw = segment['start'] if isinstance(segment, dict) else segment.start
+                                end_raw = segment['end'] if isinstance(segment, dict) else segment.end
+                                text_raw = segment['text'] if isinstance(segment, dict) else segment.text
+                                
+                                start = float(start_raw)
+                                end = float(end_raw)
+                                text = str(text_raw).strip()
+                                
+                                natural_dur = max(1.5, min(3.5, len(text) * 0.12))
+                                end = min(start + natural_dur, end)
+                                
+                                def format_srt_time(seconds):
+                                    sec = float(seconds)
+                                    h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
+                                    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                                
+                                raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
+
+                            st.session_state.md_generated_srt = raw_srt.strip()
+                            sync_success = True
+                            st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
+                            break
                         except BaseException as e:
                             last_sync_err = str(e)
                             if "500" in str(e) or "Internal Server Error" in str(e):
@@ -535,8 +546,13 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             
             col_o1, col_o2 = st.columns(2)
             with col_o1:
-                st.video(st.session_state.final_video_path)
-                st.markdown(get_download_link(st.session_state.final_video_path, f"Dubbed_{st.session_state.md_run_id}.mp4", "📥 Download Video"), unsafe_allow_html=True)
+                # 🔴 CRASH FIX: Checking if the file actually exists before showing to prevent TypeError
+                if st.session_state.get("final_video_path") and os.path.exists(st.session_state.final_video_path):
+                    st.video(st.session_state.final_video_path)
+                    st.markdown(get_download_link(st.session_state.final_video_path, f"Dubbed_{st.session_state.md_run_id}.mp4", "📥 Download Video"), unsafe_allow_html=True)
+                else:
+                    st.warning("⚠️ Video file missing after render. Please try rendering again.")
+                    
                 if subtitle_mode != "No Subtitle" and os.path.exists("subtitles.srt"):
                     st.markdown(get_download_link("subtitles.srt", "Subtitles.srt", "📥 Download Subtitles (.SRT)"), unsafe_allow_html=True)
             with col_o2:
