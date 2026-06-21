@@ -181,7 +181,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 
                 if "Gemini" in ai_provider:
                     success_gemini = False; last_err = ""
-                    for current_key in keys_list:
+                    for idx, current_key in enumerate(keys_list, 1):
+                        st.toast(f"🔄 Script: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
                         try:
                             client = genai.Client(api_key=current_key)
                             target_file = v_input if "Original" in recap_mode else a_extracted
@@ -192,16 +193,19 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             raw_output_text = res.text.strip()
                             client.files.delete(name=media_file.name)
                             success_gemini = True
+                            st.toast(f"✅ Script: Key {idx} အောင်မြင်ပါသည်။")
                             break
                         except BaseException as e:
                             last_err = str(e)
+                            st.toast(f"⚠️ Script: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။ နောက် Key သို့ ပြောင်းနေပါသည်...")
                             try: client.files.delete(name=media_file.name)
                             except: pass
                             continue
                     if not success_gemini: raise Exception(f"Gemini API Limit Error on all keys: {last_err}")
                 else:
                     success_llm = False; last_err = ""
-                    for current_key in keys_list:
+                    for idx, current_key in enumerate(keys_list, 1):
+                        st.toast(f"🔄 Script: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
                         try:
                             client_llm = Groq(api_key=current_key) if "Groq" in ai_provider else openai.OpenAI(api_key=current_key)
                             if "Groq" in ai_provider:
@@ -217,9 +221,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             comp = client_llm.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": f"{base_prompt} --- TEXT --- {tsrt}"}])
                             raw_output_text = comp.choices[0].message.content
                             success_llm = True
+                            st.toast(f"✅ Script: Key {idx} အောင်မြင်ပါသည်။")
                             break
                         except BaseException as e: 
                             last_err = str(e)
+                            st.toast(f"⚠️ Script: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။ နောက် Key သို့ ပြောင်းနေပါသည်...")
                             continue
                     if not success_llm: raise Exception(f"{ai_provider} Error on all keys: {last_err}")
 
@@ -238,8 +244,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             success_tts = False
             last_tts_err = ""
             
-            for current_key in tts_keys:
+            for idx, current_key in enumerate(tts_keys, 1):
                 try: 
+                    st.toast(f"🎙️ TTS: Key {idx} ဖြင့် အသံထုတ်လုပ်နေပါသည်...")
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
                     
@@ -273,11 +280,14 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
                         st.session_state.md_audio_dur = get_safe_duration(a_generated, st.session_state.md_generated_script)
                         success_tts = True
+                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။")
                         break
                     else:
                         last_tts_err = "Generated audio file is missing or empty."
+                        st.toast(f"⚠️ TTS: Key {idx} မှ အသံမထွက်ပါ။ နောက် Key ပြောင်းနေပါသည်...")
                 except BaseException as e: 
                     last_tts_err = str(e)
+                    st.toast(f"⚠️ TTS: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။ နောက် Key ပြောင်းနေပါသည်...")
                     continue
                     
             if not success_tts:
@@ -307,7 +317,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 sync_success = False; last_sync_err = ""
                 max_retries_per_key = 3
                 
-                for w_key in whisper_keys:
+                for idx, w_key in enumerate(whisper_keys, 1):
+                    st.toast(f"📝 Sync: Key {idx} ဖြင့် စာတန်းထိုး ချိန်ညှိနေပါသည်...")
                     for attempt in range(max_retries_per_key):
                         try:
                             success_sync, parsed_timestamps, err_sync = generate_whisper_sync_srt(
@@ -319,6 +330,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             if success_sync:
                                 st.session_state.md_generated_srt = tuples_to_srt(parsed_timestamps)
                                 sync_success = True
+                                st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
                                 break
                             else:
                                 last_sync_err = err_sync
@@ -336,6 +348,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 break
                     if sync_success:
                         break
+                    else:
+                        st.toast(f"⚠️ Sync: Key {idx} အလုပ်မလုပ်ပါ။ နောက် Key သို့ ပြောင်းနေပါသည်...")
                 
                 if not sync_success:
                     st.error(f"❌ Whisper Sync Error: {last_sync_err}")
@@ -410,7 +424,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
-                    # 🔴 BUG FIX 1: Exact Even Dimensions to avoid FFmpeg libx264 crash
                     v_w_safe, v_h_safe = 1280, 720
                     if video_ratio == "Original":
                         try:
@@ -424,7 +437,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         v_w_safe, v_h_safe = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         video = ffmpeg.filter(video, 'scale', w=v_w_safe, h=v_h_safe, force_original_aspect_ratio='increase').filter('crop', w=v_w_safe, h=v_h_safe)
                     
-                    # Force dimensions to be even numbers
                     v_w_safe = v_w_safe - (v_w_safe % 2)
                     v_h_safe = v_h_safe - (v_h_safe % 2)
                     
@@ -439,7 +451,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24)
                     if cb_freeze: video = ffmpeg.filter(video, 'fps', fps=12)
                     
-                    # 🔴 BUG FIX 2: Strict Delogo Math bounds calculation to prevent crash!
                     if md_blur and blur_w > 0 and blur_h > 0:
                         ff_x = max(0, min(int(blur_x), v_w_safe - 2))
                         ff_y = max(0, min(int(blur_y), v_h_safe - 2))
@@ -447,11 +458,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         ff_h = max(4, min(int(blur_h), v_h_safe - ff_y - 1))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
-                    # 🔴 BUG FIX 3: Absolute Path binding for Drawtext to prevent missing file error
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h_safe > v_w_safe) else 45
-                        
-                        # Ensuring absolute path for Font file
                         safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
                         
                         for i, (start, end, text) in enumerate(parsed_timestamps):
@@ -461,8 +469,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             
                             txt_filename = f"temp_sub_{i}.txt"
                             with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
-                            
-                            # Ensuring absolute path for Text file
                             abs_txt_filename = os.path.abspath(txt_filename).replace('\\', '/').replace(':', '\\:')
                             
                             y_expr = "(h-text_h)/2" if "Center" in sub_position else ("150" if "Top" in sub_position else "h-text_h-120")
@@ -475,12 +481,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         
                     if uploaded_logo:
                         try:
-                            with open("temp_logo.png", "wb") as f: f.write(uploaded_logo.getbuffer())
-                            logo_input = ffmpeg.input("temp_logo.png").filter('scale', -1, 75)
+                            logo_path = "temp_logo.png"
+                            with open(logo_path, "wb") as f: f.write(uploaded_logo.getbuffer())
+                            logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
                         except BaseException: pass
 
-                    # 🔴 BUG FIX 4: Catching explicit FFmpeg Stderr Output so we know the EXACT reason if it fails
                     try:
                         (
                             ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur)
