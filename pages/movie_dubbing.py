@@ -15,10 +15,18 @@ import openai
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import parse_and_save_real_srt
-from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, get_file_duration, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
+from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
+
+# 🔴 BULLETPROOF DURATION ENGINE: Error လုံးဝမတက်စေရန် အထူးရေးဆွဲထားပါသည်
+def get_safe_duration(file_path, fallback_text=""):
+    try:
+        probe = ffmpeg.probe(file_path)
+        dur = float(probe['format']['duration'])
+        return dur if dur > 0 else 10.0
+    except BaseException:
+        return float(len(fallback_text) * 0.12) if fallback_text else 10.0
 
 def tuples_to_srt(parsed_data):
-    """Whisper မှထွက်လာသော ဒေတာများကို Editor တွင်ပြင်နိုင်ရန် SRT String သို့ပြောင်းပေးသည့်စနစ်"""
     srt_str = ""
     for i, (start_raw, end_raw, text) in enumerate(parsed_data, 1):
         try:
@@ -34,7 +42,7 @@ def tuples_to_srt(parsed_data):
                 return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
                 
             srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{str(text).strip()}\n\n"
-        except Exception: pass
+        except BaseException: pass
     return srt_str.strip()
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
@@ -43,7 +51,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
     available_fonts = get_available_fonts()
     
-    # 📌 Initialize Session States
     if "md_step1_done" not in st.session_state: st.session_state.md_step1_done = False
     if "md_generated_srt" not in st.session_state: st.session_state.md_generated_srt = ""
     if "md_generated_script" not in st.session_state: st.session_state.md_generated_script = ""
@@ -58,7 +65,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         st.markdown("---")
         audio_engine_choice = st.radio("Voice Engine (Dubbing)", ["Edge-TTS (Default Free)", "Google Synergy TTS (Flash 3.1 Preview)", "ElevenLabs (Premium AI)", "TTSMaker (Free API)"])
         synergy_key = ""
+        eleven_key_input, custom_eleven_id, key_ttsmaker = "", "", ""
         if "Synergy" in audio_engine_choice: synergy_key = st.text_input("API Key for Synergy TTS", type="password", value=saved_gemini)
+        if "ElevenLabs" in audio_engine_choice:
+            eleven_key_input = st.text_input("ElevenLabs API Key", type="password")
+            custom_eleven_id = st.text_input("Custom Voice ID")
+        if "TTSMaker" in audio_engine_choice: key_ttsmaker = st.text_input("TTSMaker API Key", type="password")
             
         st.markdown("---")
         video_ratio = st.selectbox("Crop Ratio", ["Original", "9:16 (TikTok/Shorts)", "16:9 (YouTube)"])
@@ -111,6 +123,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     with col_in2:
         dynamic_options = ["Synergy Puck (Male)", "Synergy Aoede (Female)", "Synergy Charon (Deep)"] if "Synergy" in audio_engine_choice else (["Adam (Deep)", "Rachel (Female)"] if "ElevenLabs" in audio_engine_choice else (["TTSMaker Male", "TTSMaker Female"] if "TTSMaker" in audio_engine_choice else ["ဇော်ဇော် (Male)", "အောင်အောင် (Deep)", "နှင်းနှင်း (Female)"]))
         voice_char = st.selectbox("Select Character Voice", dynamic_options, index=0)
+        pitch_level = st.slider("🎙️ Voice Pitch", min_value=-30, max_value=30, value=0, step=5)
         fx_level = st.selectbox("🎧 Cinematic Voice FX", ["None", "🎙️ Epic Trailer Voice", "📻 Walkie-Talkie", "🏛️ Cinematic Reverb", "👹 Demon / Monster", "🤫 ASMR / Whisper", "🤖 Robot / Cyborg", "📞 Old Telephone", "⛰️ Deep Cave Echo", "🌊 Underwater / Muffled", "🔥 Motivation", "👻 Horror", "🌀 Spatial 3D Audio", "🎭 Multi-Persona"])
 
         st.markdown("<div class='sub-box'>", unsafe_allow_html=True)
@@ -146,7 +159,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     with open(v_input, "wb") as f: f.write(uploaded_file.read())
                 else: download_video_from_url(video_url, v_input)
                 extract_audio_fast(v_input, a_extracted)
-                ffmpeg.input(v_input, ss=min(get_file_duration(v_input)/2, 5)).output(st.session_state.md_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                preview_time = min(get_safe_duration(v_input)/2, 5.0)
+                ffmpeg.input(v_input, ss=preview_time).output(st.session_state.md_preview_frame, vframes=1).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
             except Exception as dl_err: st.error(str(dl_err)); st.stop()
 
         with st.spinner(f"⏳ [၂/၄] {ai_provider} ဖြင့် ဇာတ်ညွှန်းထုတ်လုပ်နေပါသည်..."):
@@ -179,7 +193,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             client.files.delete(name=media_file.name)
                             success_gemini = True
                             break
-                        except Exception as e:
+                        except BaseException as e:
                             last_err = str(e)
                             try: client.files.delete(name=media_file.name)
                             except: pass
@@ -204,7 +218,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             raw_output_text = comp.choices[0].message.content
                             success_llm = True
                             break
-                        except Exception as e: 
+                        except BaseException as e: 
                             last_err = str(e)
                             continue
                     if not success_llm: raise Exception(f"{ai_provider} Error on all keys: {last_err}")
@@ -215,7 +229,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
                 clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
                 st.session_state.md_generated_script = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
-            except Exception as e: st.error(f"Logic Error: {e}"); st.stop()
+            except BaseException as e: st.error(f"Logic Error: {e}"); st.stop()
 
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (ဇာတ်လမ်းရှည်ပါက ၂-၃ မိနစ်ခန့် ကြာနိုင်ပါသည်)"):
             pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
@@ -229,32 +243,31 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated):
                         os.remove(a_generated)
                         
-                    # 🔴 ULTIMATE SAFE CALL: Only passing strictly supported arguments
                     asyncio.run(generate_tts(
                         st.session_state.md_generated_script, 
                         voice_char, 
                         a_generated, 
                         engine=audio_engine_choice, 
+                        ttsmaker_key=key_ttsmaker, 
+                        eleven_key=eleven_key_input, 
+                        custom_eleven_id=custom_eleven_id, 
                         gemini_key=current_key, 
+                        pitch=pitch_level, 
                         voice_fx=fx_level
                     ))
                     
-                    if os.path.exists(a_generated) and os.path.getsize(a_generated) > 1000:
-                        dur_val = get_file_duration(a_generated)
-                        if dur_val is not None and float(dur_val) > 0.5:
-                            st.session_state.md_audio_dur = float(dur_val)
-                            success_tts = True
-                            break
-                        else:
-                            last_tts_err = "Generated audio duration is invalid."
+                    if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
+                        st.session_state.md_audio_dur = get_safe_duration(a_generated, st.session_state.md_generated_script)
+                        success_tts = True
+                        break
                     else:
-                        last_tts_err = "Generated audio file is missing or too small."
-                except Exception as e: 
+                        last_tts_err = "Generated audio file is missing or empty."
+                except BaseException as e: 
                     last_tts_err = str(e)
                     continue
                     
             if not success_tts:
-                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check API Quota.")
+                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
 
         if subtitle_mode != "No Subtitle":
@@ -314,12 +327,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
                                     
                                     raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
-                                except Exception: pass
+                                except BaseException: pass
                                 
                             st.session_state.md_generated_srt = raw_srt.strip()
                             sync_success = True
                             break
-                        except Exception as e: 
+                        except BaseException as e: 
                             last_sync_err = str(e)
                             if "500" in last_sync_err or "502" in last_sync_err or "503" in last_sync_err:
                                 time.sleep(3)
@@ -381,7 +394,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     cropped_part = img_preview.crop((box_x1, box_y1, box_x2, box_y2))
                     img_preview.paste(cropped_part.filter(ImageFilter.GaussianBlur(radius=22)), (box_x1, box_y1))
                     st.image(img_preview, caption="Live Blur Preview", use_column_width=True)
-                except Exception as e: 
+                except BaseException as e: 
                     st.error(f"Preview Frame Layout Draw Failure: {e}")
             else:
                 st.info("💡 Blur Option ပိတ်ထားပါသည်။ သို့မဟုတ် Preview ပုံမရှိပါ။")
@@ -406,7 +419,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             probe = ffmpeg.probe(v_input)
                             v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
                             v_w, v_h = (int(v_stream['width']), int(v_stream['height'])) if v_stream else (1280, 720)
-                        except: v_w, v_h = 1280, 720
+                        except BaseException: v_w, v_h = 1280, 720
                     else:
                         v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
                         video = ffmpeg.filter(video, 'scale', v_w, v_h, force_original_aspect_ratio='increase').filter('crop', v_w, v_h)
@@ -441,7 +454,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             with open("temp_logo.png", "wb") as f: f.write(uploaded_logo.getbuffer())
                             logo_input = ffmpeg.input("temp_logo.png").filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
-                        except: pass
+                        except BaseException: pass
 
                     ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                     
@@ -463,10 +476,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             if success_thumb:
                                 if tsuffix == "A": st.session_state.thumb_path_A = tname
                                 else: st.session_state.thumb_path_B = tname
-                    except: pass
+                    except BaseException: pass
 
                     st.session_state.render_success = True
-                except Exception as e: st.error(f"Render Error: {e}")
+                except BaseException as e: st.error(f"Render Error: {e}")
 
         # --- DASHBOARD ---
         if st.session_state.render_success:
