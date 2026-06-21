@@ -57,13 +57,14 @@ def get_atempo_filter(ratio):
     chain.append(f"atempo={ratio:.6f}")
     return ",".join(chain)
 
-# 🔴 BURMESE SCRIPT CLEANER
-def clean_burmese_text(text):
-    # Keep only Myanmar Unicode characters, spaces, newlines, and Burmese punctuation
-    pattern = r'[^\u1000-\u109F\s.,!?၊။\-\u104A\u104B]'
-    cleaned = re.sub(pattern, '', text)
-    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-    return cleaned
+# 🔴 BURMESE UNICODE DETECTOR
+def is_burmese_script(text, threshold=0.5):
+    """Check if at least threshold fraction of letters are in Myanmar Unicode range."""
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    burmese_count = sum(1 for c in letters if '\u1000' <= c <= '\u109F')
+    return (burmese_count / len(letters)) >= threshold
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -181,7 +182,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 else: download_video_from_url(video_url, v_input)
                 extract_audio_fast(v_input, a_extracted)
 
-                # 🔴 အတိအကျဆုံး Video Duration ရှာဖွေခြင်း
                 v_dur = get_video_duration(v_input)
                 st.session_state.md_video_dur = v_dur
 
@@ -199,9 +199,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 if script_curiosity: extra_rules += " [CURIOSITY]: Insert curiosity gaps to retain attention."
                 if script_tone: extra_rules += " [TONE]: Inject strong emotions."
 
-                # 🔴 AI PROMPT: မြန်မာယူနီကုဒ် အတင်းအကျပ် ထုတ်ရန်
                 extra_rules += f"\n[CRITICAL TIME LIMIT]: The video is exactly {v_dur:.1f} seconds long. Your Burmese script MUST be concise enough to be read aloud in EXACTLY {v_dur:.1f} seconds. Do NOT write a long essay."
-                extra_rules += "\n[ABSOLUTE REQUIREMENT]: The entire script must be in Myanmar Unicode script (Burmese). No Romanization, no English, no other scripts. Violation will be rejected."
+                extra_rules += "\n[ABSOLUTE REQUIREMENT - NO EXCEPTIONS]: You MUST write the entire script in Myanmar Unicode script (Burmese characters only, e.g., ကခဂဃ...). Absolutely no Romanization, no English, no other scripts. Even the title and tags must be in Burmese script."
                 extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
 
                 raw_output_text = ""
@@ -260,8 +259,30 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.session_state.md_viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "Viral Movie Recap"
                 st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
                 clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
-                # 🔴 BURMESE CLEANER အသုံးပြုပြီး မြန်မာယူနီကုဒ် မဟုတ်သော စာလုံးများကို ဖယ်ထုတ်သည်
-                st.session_state.md_generated_script = clean_burmese_text(re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip())
+                final_script_candidate = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
+
+                # 🔴 BURMESE SCRIPT FALLBACK
+                if not is_burmese_script(final_script_candidate, threshold=0.3):
+                    st.warning("⚠️ AI မှ မြန်မာယူနီကုဒ် မထုတ်ပေးသေးပါ။ ၂ ခါမြောက် ဘာသာပြန်ဆောင်ရွက်နေပါသည်...")
+                    try:
+                        # Reuse the first valid API key from the earlier loop
+                        fallback_key = keys_list[0]
+                        if "Gemini" in ai_provider:
+                            fb_client = genai.Client(api_key=fallback_key)
+                            fb_prompt = f"Convert the following text to proper Myanmar Unicode script (Burmese). Use only Burmese characters. Do not add any explanation. Output just the script.\n\n{final_script_candidate}"
+                            fb_res = fb_client.models.generate_content(model="gemini-2.5-flash", contents=fb_prompt)
+                            final_script_candidate = fb_res.text.strip()
+                        else:
+                            fb_client = Groq(api_key=fallback_key) if "Groq" in ai_provider else openai.OpenAI(api_key=fallback_key)
+                            fb_prompt = f"Convert the following text to proper Myanmar Unicode script (Burmese). Use only Burmese characters. Do not add any explanation. Output just the script.\n\n{final_script_candidate}"
+                            fb_res = fb_client.chat.completions.create(model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o", messages=[{"role": "user", "content": fb_prompt}])
+                            final_script_candidate = fb_res.choices[0].message.content.strip()
+                        st.success("✅ မြန်မာယူနီကုဒ်သို့ အောင်မြင်စွာပြောင်းလဲပြီးပါပြီ။")
+                    except Exception as fb_e:
+                        st.error(f"Fallback Translation Error: {fb_e}")
+
+                st.session_state.md_generated_script = final_script_candidate
+
             except Exception as e: st.error(f"Logic Error: {e}"); st.stop()
 
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync ချိန်ညှိနေပါသည်)"):
@@ -306,7 +327,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
                         a_dur_raw = get_wav_duration(a_generated)
 
-                        # 🔴 SYNC FIX: atempo without clamp, then trim/pad to exact video duration
+                        # 🔴 SYNC FIX
                         a_final_target = a_generated
                         if a_dur_raw > 0 and v_dur > 0:
                             ratio = a_dur_raw / v_dur
@@ -319,7 +340,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 else:
                                     a_final_target = a_generated
 
-                            # 🔴 SYNC FIX: trim/pad to exact video duration
                             exact_audio = "md_audio_exact.wav"
                             pad_filter = f"apad=whole_dur={v_dur}"
                             subprocess.run([FFMPEG_BINARY, "-y", "-i", a_final_target, "-af", pad_filter, "-t", str(v_dur), exact_audio], capture_output=True)
@@ -347,7 +367,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (V52 Auto Interpolation)"):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
 
-                # 🔴 SYNC FIX: use exact final audio for transcription
                 a_sync_input = "md_audio_optimized.mp3"
                 try:
                     subprocess.run([FFMPEG_BINARY, "-y", "-i", st.session_state.md_final_audio_path, "-ar", "16000", "-ac", "1", "-b:a", "32k", a_sync_input], capture_output=True)
@@ -375,14 +394,14 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                         file=(a_sync_input, f.read()),
                                         model="whisper-large-v3",
                                         response_format="verbose_json",
-                                        language="my"              # 🔴 BURMESE LANGUAGE
+                                        language="my"
                                     )
                                 else:
                                     transcription = client_audio.audio.transcriptions.create(
                                         model="whisper-1",
                                         file=f,
                                         response_format="verbose_json",
-                                        language="my"              # 🔴 BURMESE LANGUAGE
+                                        language="my"
                                     )
 
                             segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
@@ -484,7 +503,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
-                    # 🔴 SYNC FIX: render duration = video duration (audio already exact)
                     render_dur = st.session_state.md_video_dur
                     if render_dur <= 0: render_dur = 10.0
 
@@ -555,7 +573,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         except BaseException: pass
 
                     try:
-                        # 🔴 SYNC FIX: use render_dur (video_dur) as the output length
                         (
                             ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=render_dur)
                             .overwrite_output()
