@@ -34,7 +34,7 @@ def tuples_to_srt(parsed_data):
                 return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
                 
             srt_str += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{str(text).strip()}\n\n"
-        except BaseException: pass
+        except Exception: pass
     return srt_str.strip()
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
@@ -58,12 +58,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         st.markdown("---")
         audio_engine_choice = st.radio("Voice Engine (Dubbing)", ["Edge-TTS (Default Free)", "Google Synergy TTS (Flash 3.1 Preview)", "ElevenLabs (Premium AI)", "TTSMaker (Free API)"])
         synergy_key = ""
-        eleven_key_input, custom_eleven_id, key_ttsmaker = "", "", ""
         if "Synergy" in audio_engine_choice: synergy_key = st.text_input("API Key for Synergy TTS", type="password", value=saved_gemini)
-        if "ElevenLabs" in audio_engine_choice:
-            eleven_key_input = st.text_input("ElevenLabs API Key", type="password")
-            custom_eleven_id = st.text_input("Custom Voice ID")
-        if "TTSMaker" in audio_engine_choice: key_ttsmaker = st.text_input("TTSMaker API Key", type="password")
             
         st.markdown("---")
         video_ratio = st.selectbox("Crop Ratio", ["Original", "9:16 (TikTok/Shorts)", "16:9 (YouTube)"])
@@ -116,7 +111,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     with col_in2:
         dynamic_options = ["Synergy Puck (Male)", "Synergy Aoede (Female)", "Synergy Charon (Deep)"] if "Synergy" in audio_engine_choice else (["Adam (Deep)", "Rachel (Female)"] if "ElevenLabs" in audio_engine_choice else (["TTSMaker Male", "TTSMaker Female"] if "TTSMaker" in audio_engine_choice else ["ဇော်ဇော် (Male)", "အောင်အောင် (Deep)", "နှင်းနှင်း (Female)"]))
         voice_char = st.selectbox("Select Character Voice", dynamic_options, index=0)
-        pitch_level = st.slider("🎙️ Voice Pitch", min_value=-30, max_value=30, value=0, step=5)
         fx_level = st.selectbox("🎧 Cinematic Voice FX", ["None", "🎙️ Epic Trailer Voice", "📻 Walkie-Talkie", "🏛️ Cinematic Reverb", "👹 Demon / Monster", "🤫 ASMR / Whisper", "🤖 Robot / Cyborg", "📞 Old Telephone", "⛰️ Deep Cave Echo", "🌊 Underwater / Muffled", "🔥 Motivation", "👻 Horror", "🌀 Spatial 3D Audio", "🎭 Multi-Persona"])
 
         st.markdown("<div class='sub-box'>", unsafe_allow_html=True)
@@ -185,12 +179,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             client.files.delete(name=media_file.name)
                             success_gemini = True
                             break
-                        except BaseException as e:
+                        except Exception as e:
                             last_err = str(e)
                             try: client.files.delete(name=media_file.name)
                             except: pass
                             continue
-                    if not success_gemini: raise Exception(f"Gemini API Limit Error on all keys: {last_err}")
+                    if not success_gemini: raise Exception(f"Gemini API Error on all keys: {last_err}")
                 else:
                     success_llm = False; last_err = ""
                     for current_key in keys_list:
@@ -210,7 +204,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             raw_output_text = comp.choices[0].message.content
                             success_llm = True
                             break
-                        except BaseException as e: 
+                        except Exception as e: 
                             last_err = str(e)
                             continue
                     if not success_llm: raise Exception(f"{ai_provider} Error on all keys: {last_err}")
@@ -230,45 +224,37 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             success_tts = False
             last_tts_err = ""
             
-            orig_error = st.error
-            orig_stop = st.stop
-            
-            def mock_error(*args, **kwargs): pass
-            def mock_stop(*args, **kwargs): raise RuntimeError("MOCKED_STOP_EXCEPTION")
-            
-            try:
-                st.error = mock_error
-                st.stop = mock_stop
-                
-                for current_key in tts_keys:
-                    try: 
-                        if os.path.exists(a_generated): os.remove(a_generated)
-                        asyncio.run(generate_tts(st.session_state.md_generated_script, voice_char, a_generated, engine=audio_engine_choice, ttsmaker_key=key_ttsmaker, eleven_key=eleven_key_input, custom_eleven_id=custom_eleven_id, gemini_key=current_key, pitch=pitch_level, voice_fx=fx_level))
+            for current_key in tts_keys:
+                try: 
+                    if os.path.exists(a_generated):
+                        os.remove(a_generated)
                         
-                        valid_audio = False
-                        if os.path.exists(a_generated) and os.path.getsize(a_generated) > 2000:
-                            try:
-                                # 🔴 ERROR-FREE DURATION CHECK
-                                dur_val = get_file_duration(a_generated)
-                                if dur_val is not None and float(dur_val) > 0.5:
-                                    st.session_state.md_audio_dur = float(dur_val)
-                                    valid_audio = True
-                            except BaseException: pass
-                        
-                        if valid_audio:
+                    # 🔴 ULTIMATE SAFE CALL: Only passing strictly supported arguments
+                    asyncio.run(generate_tts(
+                        st.session_state.md_generated_script, 
+                        voice_char, 
+                        a_generated, 
+                        engine=audio_engine_choice, 
+                        gemini_key=current_key, 
+                        voice_fx=fx_level
+                    ))
+                    
+                    if os.path.exists(a_generated) and os.path.getsize(a_generated) > 1000:
+                        dur_val = get_file_duration(a_generated)
+                        if dur_val is not None and float(dur_val) > 0.5:
+                            st.session_state.md_audio_dur = float(dur_val)
                             success_tts = True
                             break
                         else:
-                            raise RuntimeError("Invalid Audio Generated")
-                    except BaseException as e: 
-                        last_tts_err = str(e)
-                        continue
-            finally:
-                st.error = orig_error
-                st.stop = orig_stop
-                
+                            last_tts_err = "Generated audio duration is invalid."
+                    else:
+                        last_tts_err = "Generated audio file is missing or too small."
+                except Exception as e: 
+                    last_tts_err = str(e)
+                    continue
+                    
             if not success_tts:
-                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
+                st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check API Quota.")
                 st.stop()
 
         if subtitle_mode != "No Subtitle":
@@ -328,12 +314,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                         return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
                                     
                                     raw_srt += f"{i}\n{format_srt_time(start)} --> {format_srt_time(end)}\n{text}\n\n"
-                                except BaseException: pass
+                                except Exception: pass
                                 
                             st.session_state.md_generated_srt = raw_srt.strip()
                             sync_success = True
                             break
-                        except BaseException as e: 
+                        except Exception as e: 
                             last_sync_err = str(e)
                             if "500" in last_sync_err or "502" in last_sync_err or "503" in last_sync_err:
                                 time.sleep(3)
