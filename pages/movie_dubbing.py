@@ -16,10 +16,9 @@ import openai
 
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.audio_tts import generate_tts
-from core_engines.subtitle_sync import parse_and_save_real_srt
-from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
+from core_engines.video_render import generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
-# 🔴 BULLETPROOF DURATION ENGINE: မည်သည့် Error မှ မတက်နိုင်သော Python Native အချိန်တွက်စနစ်
+# 🔴 BULLETPROOF DURATION ENGINE
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -43,7 +42,7 @@ def fmt_time(seconds):
     h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# 🔴 SYNC FIX: unlimited atempo chaining function
+# 🔴 UNLIMITED ATEMPO CHAINING
 def get_atempo_filter(ratio):
     if abs(ratio - 1.0) < 0.01:
         return None
@@ -56,6 +55,76 @@ def get_atempo_filter(ratio):
         ratio /= 0.5
     chain.append(f"atempo={ratio:.6f}")
     return ",".join(chain)
+
+# 🔴 INLINE SRT PARSER (From your original working code to prevent unexpected arguments)
+def parse_and_save_real_srt(raw_srt_text, output_file, use_fade=False):
+    lines = raw_srt_text.strip().split('\n')
+    parsed_lines = []
+    current_start, current_end = 0.0, 0.0
+    current_text = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.isdigit() and len(line) < 5:
+            continue
+
+        if "-->" in line:
+            if current_text:
+                parsed_lines.append((current_start, current_end, " ".join(current_text)))
+                current_text = []
+
+            parts = line.split("-->")
+            try:
+                def parse_lenient(t_str):
+                    t_str = t_str.strip().replace('.', ',')
+                    if ',' not in t_str:
+                        t_str += ",000"
+                    main_t, ms = t_str.split(',')
+                    tp = main_t.split(':')
+                    if len(tp) == 1:
+                        return int(tp[0]) + float(ms.ljust(3, '0'))/1000.0
+                    elif len(tp) == 2:
+                        return int(tp[0])*60 + int(tp[1]) + float(ms.ljust(3, '0'))/1000.0
+                    else:
+                        return int(tp[0])*3600 + int(tp[1])*60 + int(tp[2]) + float(ms.ljust(3, '0'))/1000.0
+
+                current_start = parse_lenient(parts[0])
+                current_end = parse_lenient(parts[1])
+            except Exception:
+                pass
+        else:
+            if not re.match(r'^\[.*?\]$', line):
+                current_text.append(line)
+
+    if current_text:
+        parsed_lines.append((current_start, current_end, " ".join(current_text)))
+
+    final_parsed = []
+    prev_end = 0.0
+    full_speech = []
+
+    for start, end, txt in parsed_lines:
+        if start < prev_end:
+            start = prev_end + 0.1
+        if end - start < 0.8:
+            end = start + 0.8
+        prev_end = end
+
+        clean_speech_text = re.sub(r'[^\w\s\u1000-\u109F]', '', txt)
+        if clean_speech_text.strip():
+            full_speech.append(clean_speech_text)
+
+        final_parsed.append((start, end, txt))
+
+    with open(output_file, "w", encoding="utf-8-sig") as f:
+        for i, (s, e, t) in enumerate(final_parsed, 1):
+            def fmt(sec):
+                return f"{int(sec//3600):02d}:{int((sec%3600)//60):02d}:{int(sec%60):02d},{int((sec%1)*1000):03d}"
+            f.write(f"{i}\n{fmt(s)} --> {fmt(e)}\n{t}\n\n")
+
+    return final_parsed, " ".join(full_speech)
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -169,13 +238,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         pbar = st.progress(0, text="🚀 အလုပ်စတင်နေပါပြီ...")
         v_input, a_extracted, a_generated = "md_input.mp4", "md_extracted.mp3", "md_audio.wav"
 
-        # ---------- 1️⃣ Download / Upload Video ----------
-        with st.spinner("⏳ [၁/၄] ဗီဒီယို ဖိုင်အားစနစ်ထဲသို့ ဆွဲသွင်းနေပါသည်..."):
+        with st.spinner("⏳ [၁/၃] ဗီဒီယို ဖိုင်အားစနစ်ထဲသို့ ဆွဲသွင်းနေပါသည်..."):
             pbar.progress(10, text="📥 ဗီဒီယိုဆွဲယူနေပါသည်...")
             try:
                 if uploaded_file:
-                    with open(v_input, "wb") as f:
-                        f.write(uploaded_file.read())
+                    with open(v_input, "wb") as f: f.write(uploaded_file.read())
                 else:
                     download_video_from_url(video_url, v_input)
                 extract_audio_fast(v_input, a_extracted)
@@ -189,8 +256,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(str(dl_err))
                 st.stop()
 
-        # ---------- 2️⃣ Generate Script (BACK TO SRT FORMAT) ----------
-        with st.spinner(f"⏳ [၂/၄] {ai_provider} ဖြင့် ဇာတ်ညွှန်းထုတ်လုပ်နေပါသည်..."):
+        with st.spinner(f"⏳ [၂/၃] {ai_provider} ဖြင့် ဇာတ်ညွှန်းထုတ်လုပ်နေပါသည်..."):
             pbar.progress(30, text="🤖 ဇာတ်ညွှန်းနှင့် Title ဖန်တီးနေပါသည်...")
             try:
                 extra_rules = ""
@@ -205,9 +271,12 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 if script_tone:
                     extra_rules += " [TONE]: Inject strong emotions."
 
+                # AI ကို အချိန်အတိအကျ ရေးရန်နှင့် Hormozi style အတိုင်းတိုတိုဖြတ်ရန် ကန့်သတ်ခြင်း
+                hormozi_rule = " [HORMOZI]: Split the subtitles into chunks of ONLY 1 to 4 words max per block. CRITICAL: DO NOT remove original timestamps." if sub_short else ""
+                
                 extra_rules += f"\n[CRITICAL TIME LIMIT]: The video is exactly {v_dur:.1f} seconds long. Your Burmese script MUST be concise enough to be read aloud in EXACTLY {v_dur:.1f} seconds. Do NOT write a long essay."
-                extra_rules += "\n[ABSOLUTE REQUIREMENT]: Output ONLY pure Myanmar Unicode script (Burmese characters). NO Romanization, NO English, NO other scripts. The script must be natural spoken Burmese."
-                extra_rules += "\n[OUTPUT FORMAT]: You MUST output the script in valid SRT format with accurate timestamps that match the scenes."
+                extra_rules += "\n[ABSOLUTE REQUIREMENT]: Output ONLY pure Myanmar Unicode script (Burmese characters). NO Romanization, NO English words, NO stage directions like 'action' or 'excited'."
+                extra_rules += f"\n[OUTPUT FORMAT]: You MUST output the script in valid SRT format matching the original timestamps exactly.{hormozi_rule}"
                 extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
 
                 raw_output_text = ""
@@ -226,11 +295,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 time.sleep(2)
                             gemini_prompt = (
                                 "Watch the video carefully. Invent an ORIGINAL, highly engaging storytelling recap in Burmese. "
-                                "Do NOT just translate. STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output pure text narrative. "
+                                "Do NOT just translate. STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output ONLY valid SRT format perfectly synced to the scenes. "
                                 f"{extra_rules}"
                             ) if "Original" in recap_mode else (
                                 "Listen to the audio. Translate and adapt the text into highly engaging spoken Burmese. "
-                                "STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output pure text narrative. "
+                                "STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output ONLY valid SRT format keeping the ORIGINAL timestamps exactly. "
                                 f"{extra_rules}"
                             )
                             res = client.models.generate_content(
@@ -245,10 +314,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         except Exception as e:
                             last_err = str(e)
                             st.toast(f"⚠️ Script: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။")
-                            try:
-                                client.files.delete(name=media_file.name)
-                            except Exception:
-                                pass
+                            try: client.files.delete(name=media_file.name)
+                            except Exception: pass
                             continue
                     if not success_gemini:
                         raise Exception(f"Gemini Error: {last_err}")
@@ -272,12 +339,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                     ]) if isinstance(transcription, dict) else str(transcription)
                             else:
                                 with open(a_extracted, "rb") as file:
-                                    ts_res = client_llm.audio.translations.create(
-                                        model="whisper-1", file=file, response_format="srt"
-                                    )
+                                    ts_res = client_llm.audio.translations.create(model="whisper-1", file=file, response_format="srt")
                                     tsrt = str(ts_res)
 
-                            base_prompt = f"Translate and adapt the English SRT into engaging Burmese. Output pure text narrative. {extra_rules}"
+                            base_prompt = f"Translate and adapt the English SRT into engaging Burmese. Output ONLY valid SRT format. {extra_rules}"
                             comp = client_llm.chat.completions.create(
                                 model="llama-3.3-70b-versatile" if "Groq" in ai_provider else "gpt-4o",
                                 messages=[{"role": "user", "content": f"{base_prompt} --- SRT --- {tsrt}"}]
@@ -293,23 +358,20 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if not success_llm:
                         raise Exception(f"{ai_provider} Error: {last_err}")
 
-                # Extract title and tags
                 title_match = re.search(r'\[TITLE:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
                 tags_match = re.search(r'\[TAGS:\s*(.*?)\]', raw_output_text, re.IGNORECASE)
                 st.session_state.md_viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "Viral Movie Recap"
                 st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
 
-                # Clean up the raw SRT text (remove title/tags)
                 clean_srt_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
                 clean_srt_text = re.sub(r'\[TAGS:.*?\]', '', clean_srt_text, flags=re.IGNORECASE).strip()
+                
+                # Strip out markdown formatting if any
+                marker = chr(96) * 3
+                clean_srt_text = clean_srt_text.replace(f"{marker}srt", "").replace(marker, "")
 
-                # Parse the SRT into timestamps and speech text
-                parsed_timestamps, speech_text = parse_and_save_real_srt(
-                    clean_srt_text,
-                    "subtitles.srt",
-                    use_fade=False,
-                    max_words=3 if sub_short else 6
-                )
+                # 🔴 FIX: Using inline parameter-safe parse function
+                parsed_timestamps, speech_text = parse_and_save_real_srt(clean_srt_text, "subtitles.srt", use_fade=False)
 
                 st.session_state.md_generated_script = speech_text
                 st.session_state.md_generated_srt = clean_srt_text
@@ -318,16 +380,15 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"Script Error: {e}")
                 st.stop()
 
-        # ---------- 3️⃣ Generate TTS Audio (Aggressively filter out English Action tags) ----------
-        with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync ချိန်ညှိနေပါသည်)"):
-            pbar.progress(50, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
+        with st.spinner("⏳ [၃/၃] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
+            pbar.progress(70, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
 
-            # 🔴 ENGLISH TAGS BUG FIX: TTS ဆီ မပို့ခင် အင်္ဂလိပ်စာလုံးများကို အကြွင်းမဲ့ ဖယ်ရှားပစ်ပါသည်
+            # 🔴 ENGLISH TAGS BUG FIX: အင်္ဂလိပ်စာလုံးများကို အကြွင်းမဲ့ ဖယ်ရှားပစ်ပါသည်
             clean_speech = st.session_state.md_generated_script
             clean_speech = re.sub(r'\[.*?\]', '', clean_speech)
             clean_speech = re.sub(r'\{.*?\}', '', clean_speech)
             clean_speech = re.sub(r'\(.*?\)', '', clean_speech)
-            clean_speech = re.sub(r'[a-zA-Z]', '', clean_speech) # Action, Excited ကဲ့သို့ အင်္ဂလိပ်စာလုံးများ လုံးဝပါခွင့်မပေးပါ
+            clean_speech = re.sub(r'[a-zA-Z]', '', clean_speech) 
             clean_speech = re.sub(r'\s+', ' ', clean_speech).strip()
 
             tts_keys = [k.strip() for k in (synergy_key if synergy_key else api_key_input).split(",") if k.strip()]
@@ -337,12 +398,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             for idx, current_key in enumerate(tts_keys, 1):
                 try:
                     st.toast(f"🎙️ TTS: Key {idx} ဖြင့် အသံထုတ်လုပ်နေပါသည်...")
-                    if os.path.exists(a_generated):
-                        os.remove(a_generated)
+                    if os.path.exists(a_generated): os.remove(a_generated)
 
                     if inspect.iscoroutinefunction(generate_tts):
                         asyncio.run(generate_tts(
-                            clean_speech, # <--- Cleaned script passed here
+                            clean_speech,
                             voice_char,
                             a_generated,
                             engine=audio_engine_choice,
@@ -370,11 +430,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
                         a_dur_raw = get_wav_duration(a_generated)
 
-                        # 🔴 SYNC FIX: atempo without clamp, then trim/pad to exact video duration
                         a_final_target = a_generated
                         if a_dur_raw > 0 and v_dur > 0:
                             ratio = a_dur_raw / v_dur
-                            # unlimited atempo using chaining
                             filt = get_atempo_filter(ratio)
                             if filt:
                                 synced_audio = "md_audio_synced.wav"
@@ -382,11 +440,11 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 if os.path.exists(synced_audio) and os.path.getsize(synced_audio) > 100:
                                     a_final_target = synced_audio
                                 else:
-                                    a_final_target = a_generated  # fallback
+                                    a_final_target = a_generated  
                             else:
-                                a_final_target = a_generated  # no sync needed
+                                a_final_target = a_generated  
 
-                            # 🔴 SYNC FIX: now trim/pad to exact video duration
+                            # 🔴 EXACT PADDING FIX
                             exact_audio = "md_audio_exact.wav"
                             pad_filter = f"apad=whole_dur={v_dur}"
                             subprocess.run([FFMPEG_BINARY, "-y", "-i", a_final_target, "-af", pad_filter, "-t", str(v_dur), exact_audio], capture_output=True)
@@ -410,80 +468,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
                 st.stop()
 
-        if subtitle_mode != "No Subtitle":
-            with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (V52 Auto Interpolation)"):
-                pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
-
-                # 🔴 SYNC FIX: use the exact final audio for whisper transcription
-                a_sync_input = "md_audio_optimized.mp3"
-                try:
-                    subprocess.run([FFMPEG_BINARY, "-y", "-i", st.session_state.md_final_audio_path, "-ar", "16000", "-ac", "1", "-b:a", "32k", a_sync_input], capture_output=True)
-                    if not os.path.exists(a_sync_input): a_sync_input = st.session_state.md_final_audio_path
-                except Exception:
-                    a_sync_input = st.session_state.md_final_audio_path
-
-                whisper_key_raw = (groq_key_fc or load_key("GROQ_API_KEY") or load_key("saved_groq_key.txt") or api_key_input).strip()
-                whisper_keys = [k.strip() for k in whisper_key_raw.split(",") if k.strip()]
-
-                sync_success = False; last_sync_err = ""
-                max_retries_per_key = 3
-
-                for idx, w_key in enumerate(whisper_keys, 1):
-                    st.toast(f"📝 Sync: Key {idx} ဖြင့် စာတန်းထိုး ချိန်ညှိနေပါသည်...")
-                    for attempt in range(max_retries_per_key):
-                        try:
-                            raw_srt_str = ""
-                            chunk_idx = 1
-                            client_audio = Groq(api_key=w_key) if w_key.startswith("gsk_") else openai.OpenAI(api_key=w_key)
-
-                            with open(a_sync_input, "rb") as f:
-                                if w_key.startswith("gsk_"):
-                                    transcription = client_audio.audio.transcriptions.create(
-                                        file=(a_sync_input, f.read()),
-                                        model="whisper-large-v3",
-                                        response_format="verbose_json"
-                                    )
-                                else:
-                                    transcription = client_audio.audio.transcriptions.create(
-                                        model="whisper-1",
-                                        file=f,
-                                        response_format="verbose_json"
-                                    )
-
-                            segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
-
-                            # 🔴 V52 INTERPOLATION: စာတန်းထိုးကို သေသပ်စွာခွဲ၍ အချိန်နှင့် အတိအကျ ကပ်ပေးသောစနစ်
-                            for segment in segments:
-                                start = float(segment['start'] if isinstance(segment, dict) else getattr(segment, 'start', 0.0))
-                                end = float(segment['end'] if isinstance(segment, dict) else getattr(segment, 'end', 0.0))
-                                text = str(segment['text'] if isinstance(segment, dict) else getattr(segment, 'text', '')).strip()
-
-                                words = text.split()
-                                chunk_size = 3 if sub_short else 6
-                                for j in range(0, len(words), chunk_size):
-                                    chunk = " ".join(words[j:j+chunk_size])
-                                    chunk_start = start + (j / len(words)) * (end - start)
-                                    chunk_end = start + (min(j + chunk_size, len(words)) / len(words)) * (end - start)
-
-                                    raw_srt_str += f"{chunk_idx}\n{fmt_time(chunk_start)} --> {fmt_time(chunk_end)}\n{chunk}\n\n"
-                                    chunk_idx += 1
-
-                            st.session_state.md_generated_srt = raw_srt_str.strip()
-                            sync_success = True
-                            st.toast(f"✅ Sync: Key {idx} အောင်မြင်ပါသည်။")
-                            break
-                        except Exception as e:
-                            last_sync_err = str(e)
-                            if "500" in str(e) or "Internal Server Error" in str(e):
-                                time.sleep(5); continue
-                            else: break
-                    if sync_success: break
-                    else: st.toast(f"⚠️ Sync: Key {idx} အလုပ်မလုပ်ပါ။")
-
-                if not sync_success:
-                    st.error(f"❌ Whisper Sync Error: {last_sync_err}"); st.stop()
-        else: pbar.progress(75, text="⏩ Subtitle ပိတ်ထားသဖြင့် ကျော်ဖြတ်နေပါသည်...")
-
         st.session_state.md_step1_done = True
         pbar.progress(100, text="✅ အဆင့် (၁) ပြီးစီးပါပြီ!")
 
@@ -492,6 +476,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
     # ==========================================
     if st.session_state.md_step1_done:
         st.markdown("<hr><h3 style='color: #38bdf8;'>🛠️ Step 2: Review & Final Render</h3>", unsafe_allow_html=True)
+
+        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
 
         col_r1, col_r2 = st.columns(2)
         with col_r1:
@@ -546,15 +532,10 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
             with st.spinner("⏳ Master Video အား ပေါင်းစပ်ထုတ်လုပ်နေပါသည်..."):
                 try:
-                    # Re-parse the edited SRT
                     parsed_timestamps = []
                     if subtitle_mode != "No Subtitle":
-                        parsed_timestamps, _ = parse_and_save_real_srt(
-                            edited_srt, "subtitles.srt", use_fade=False,
-                            max_words=3 if sub_short else 6
-                        )
+                        parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
-                    # 🔴 SYNC FIX: render duration = video duration only (audio is already exact)
                     render_dur = st.session_state.md_video_dur
                     if render_dur <= 0: render_dur = 10.0
 
@@ -597,8 +578,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
 
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
                         wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h_safe > v_w_safe) else 45
-                        safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
-
+                        
                         for i, (start, end, text) in enumerate(parsed_timestamps):
                             wrapped_lines = textwrap.wrap(text, width=wrap_width) or [text]
                             max_len = max(len(line) for line in wrapped_lines)
@@ -625,7 +605,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         except BaseException: pass
 
                     try:
-                        # 🔴 SYNC FIX: use render_dur (which is video_dur) as the output length
                         (
                             ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=render_dur)
                             .overwrite_output()
@@ -642,8 +621,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             try:
                                 main_a = ffmpeg.input("temp_dubbed.mp4").audio
                                 bgm_a = ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('volume', bgm_volume)
-                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='longest')
-                                # 🔴 SYNC FIX: also trim BGM mix to video duration
+                                mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='first')
                                 ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=render_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
                             except ffmpeg.Error as e:
                                 err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
