@@ -326,7 +326,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                     time.sleep(5)
                                     continue
                                 else:
-                                    break
+                                    break  
                         except BaseException as e:
                             last_sync_err = str(e)
                             if "500" in str(e) or "Internal Server Error" in str(e):
@@ -410,42 +410,48 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     audio = ffmpeg.input(a_generated).audio
                     video = ffmpeg.input(v_input).video
                     
-                    # 🔴 RENDER BUG FIX 1: Scaling Dimensions Validation
-                    v_w, v_h = (1280, 720) # Default
+                    # 🔴 BUG FIX 1: Exact Even Dimensions to avoid FFmpeg libx264 crash
+                    v_w_safe, v_h_safe = 1280, 720
                     if video_ratio == "Original":
                         try:
                             probe = ffmpeg.probe(v_input)
                             v_stream = next((s for s in probe['streams'] if s['codec_type'] == 'video'), None)
                             if v_stream:
-                                v_w = int(v_stream['width'])
-                                v_h = int(v_stream['height'])
+                                v_w_safe = int(v_stream['width'])
+                                v_h_safe = int(v_stream['height'])
                         except BaseException: pass
                     else:
-                        v_w, v_h = (720, 1280) if "9:16" in video_ratio else (1280, 720)
-                        video = ffmpeg.filter(video, 'scale', w=v_w, h=v_h, force_original_aspect_ratio='increase').filter('crop', w=v_w, h=v_h)
+                        v_w_safe, v_h_safe = (720, 1280) if "9:16" in video_ratio else (1280, 720)
+                        video = ffmpeg.filter(video, 'scale', w=v_w_safe, h=v_h_safe, force_original_aspect_ratio='increase').filter('crop', w=v_w_safe, h=v_h_safe)
                     
-                    # 🔴 RENDER BUG FIX 2: Integer strict casting for Crop
+                    # Force dimensions to be even numbers
+                    v_w_safe = v_w_safe - (v_w_safe % 2)
+                    v_h_safe = v_h_safe - (v_h_safe % 2)
+                    
                     if cb_bypass: 
-                        new_w, new_h = int(v_w * 1.08), int(v_h * 1.08)
-                        video = ffmpeg.filter(video, 'scale', w=new_w, h=new_h).filter('crop', w=v_w, h=v_h)
+                        scale_w = int(v_w_safe * 1.08); scale_w = scale_w - (scale_w % 2)
+                        scale_h = int(v_h_safe * 1.08); scale_h = scale_h - (scale_h % 2)
+                        video = ffmpeg.filter(video, 'scale', w=scale_w, h=scale_h).filter('crop', w=v_w_safe, h=v_h_safe)
                         
                     if cb_mirror: video = ffmpeg.filter(video, 'hflip')
                     if cb_color: video = ffmpeg.filter(video, 'eq', brightness=0.01, contrast=1.04, saturation=1.05)
                     if cb_grain: video = ffmpeg.filter(video, 'noise', alls=2, allf='t+u')
                     if cb_fps: video = ffmpeg.filter(video, 'fps', fps=24)
-                    if cb_freeze: video = ffmpeg.filter(video, 'fps', fps=12) # Safely replaced minterpolate
+                    if cb_freeze: video = ffmpeg.filter(video, 'fps', fps=12)
                     
-                    # 🔴 RENDER BUG FIX 3: Safe Delogo boundaries
+                    # 🔴 BUG FIX 2: Strict Delogo Math bounds calculation to prevent crash!
                     if md_blur and blur_w > 0 and blur_h > 0:
-                        ff_x = int(max(0, min(blur_x, v_w - 10)))
-                        ff_y = int(max(0, min(blur_y, v_h - 10)))
-                        ff_w = int(max(10, min(blur_w, v_w - ff_x)))
-                        ff_h = int(max(10, min(blur_h, v_h - ff_y)))
+                        ff_x = max(0, min(int(blur_x), v_w_safe - 2))
+                        ff_y = max(0, min(int(blur_y), v_h_safe - 2))
+                        ff_w = max(4, min(int(blur_w), v_w_safe - ff_x - 1))
+                        ff_h = max(4, min(int(blur_h), v_h_safe - ff_y - 1))
                         video = ffmpeg.filter(video, 'delogo', x=ff_x, y=ff_y, w=ff_w, h=ff_h, show=0)
 
-                    # 🔴 RENDER BUG FIX 4: Absolute Safe Paths for Drawtext
+                    # 🔴 BUG FIX 3: Absolute Path binding for Drawtext to prevent missing file error
                     if subtitle_mode in ["Burn into Video", "Both (Burn + SRT)"] and parsed_timestamps:
-                        wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h > v_w) else 45
+                        wrap_width = 25 if "9:16" in video_ratio or (video_ratio == "Original" and v_h_safe > v_w_safe) else 45
+                        
+                        # Ensuring absolute path for Font file
                         safe_font_path = os.path.abspath(selected_font).replace('\\', '/').replace(':', '\\:')
                         
                         for i, (start, end, text) in enumerate(parsed_timestamps):
@@ -455,10 +461,13 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                             
                             txt_filename = f"temp_sub_{i}.txt"
                             with open(txt_filename, "w", encoding="utf-8") as tf: tf.write(centered_text)
+                            
+                            # Ensuring absolute path for Text file
                             abs_txt_filename = os.path.abspath(txt_filename).replace('\\', '/').replace(':', '\\:')
                             
                             y_expr = "(h-text_h)/2" if "Center" in sub_position else ("150" if "Top" in sub_position else "h-text_h-120")
                             c_str = "yellow" if "Yellow" in sub_color else ("green" if "Green" in sub_color else ("red" if "Red" in sub_color else ("gold" if "Gold" in sub_color else "white")))
+                            
                             video = ffmpeg.filter(video, 'drawtext', textfile=abs_txt_filename, fontfile=safe_font_path, fontcolor=c_str, fontsize=sub_size, bordercolor='black', borderw=sub_thickness, x='(w-text_w)/2', y=y_expr, line_spacing=20, text_align='C', enable=f'between(t,{start},{end})')
 
                     if use_text_watermark and watermark_text: 
@@ -466,22 +475,22 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         
                     if uploaded_logo:
                         try:
-                            logo_path = "temp_logo.png"
-                            with open(logo_path, "wb") as f: f.write(uploaded_logo.getbuffer())
-                            logo_input = ffmpeg.input(logo_path).filter('scale', -1, 75)
+                            with open("temp_logo.png", "wb") as f: f.write(uploaded_logo.getbuffer())
+                            logo_input = ffmpeg.input("temp_logo.png").filter('scale', -1, 75)
                             video = ffmpeg.overlay(video, logo_input, x='W-w-30', y=30)
                         except BaseException: pass
 
-                    # 🔴 RENDER BUG FIX 5: FFmpeg Error explicit capturing & displaying
+                    # 🔴 BUG FIX 4: Catching explicit FFmpeg Stderr Output so we know the EXACT reason if it fails
                     try:
-                        out_stream = ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur)
-                        out_stream.overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
+                        (
+                            ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=st.session_state.md_audio_dur)
+                            .overwrite_output()
+                            .run(cmd=FFMPEG_BINARY, capture_stderr=True)
+                        )
                     except ffmpeg.Error as e:
                         err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
-                        st.error(f"FFmpeg Rendering Error:\n```\n{err_msg}\n```")
-                        st.stop()
+                        raise Exception(f"Video Rendering Engine Failed:\n```\n{err_msg}\n```")
                     
-                    # 🔴 RENDER BUG FIX 6: Crash-free BGM mixing
                     if selected_bgm not in ["None (BGM မထည့်ပါ)"]:
                         st.info("🎵 Applying Cinematic Auto-Ducking BGM...")
                         bgm_path = os.path.join("bgm_tracks", random.choice(bgm_files) if "Auto" in selected_bgm else selected_bgm)
@@ -493,7 +502,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=st.session_state.md_audio_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
                             except ffmpeg.Error as e:
                                 err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
-                                st.error(f"BGM Mixing FFmpeg Error:\n```\n{err_msg}\n```")
+                                st.warning(f"BGM Mixing failed, skipping BGM:\n{err_msg}")
                                 shutil.move("temp_dubbed.mp4", v_final)
                         else: shutil.move("temp_dubbed.mp4", v_final)
                     else: shutil.move("temp_dubbed.mp4", v_final)
@@ -509,7 +518,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     except BaseException: pass
 
                     st.session_state.render_success = True
-                except BaseException as e: st.error(f"Render Error: {e}")
+                except BaseException as e: 
+                    st.error(f"Render Core Error (Please take screenshot of this):\n\n{e}")
 
         # --- DASHBOARD ---
         if st.session_state.render_success:
