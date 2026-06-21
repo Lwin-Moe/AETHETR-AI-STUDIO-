@@ -19,7 +19,7 @@ from core_engines.audio_tts import generate_tts
 from core_engines.subtitle_sync import parse_and_save_real_srt
 from core_engines.video_render import render_premium_saas_video, generate_professional_thumbnail, download_video_from_url, extract_audio_fast, FFMPEG_BINARY, VideoConfig
 
-# 🔴 BULLETPROOF DURATION ENGINE: မည်သည့် Error မှ မတက်နိုင်သော Python Native အချိန်တွက်စနစ်
+# 🔴 BULLETPROOF DURATION ENGINE
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -43,7 +43,7 @@ def fmt_time(seconds):
     h = int(sec // 3600); m = int((sec % 3600) // 60); s = int(sec % 60); ms = int((sec % 1) * 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
 
-# 🔴 SYNC FIX: unlimited atempo chaining function
+# 🔴 SYNC FIX: unlimited atempo chaining
 def get_atempo_filter(ratio):
     if abs(ratio - 1.0) < 0.01:
         return None
@@ -56,6 +56,14 @@ def get_atempo_filter(ratio):
         ratio /= 0.5
     chain.append(f"atempo={ratio:.6f}")
     return ",".join(chain)
+
+# 🔴 BURMESE SCRIPT CLEANER
+def clean_burmese_text(text):
+    # Keep only Myanmar Unicode characters, spaces, newlines, and Burmese punctuation
+    pattern = r'[^\u1000-\u109F\s.,!?၊။\-\u104A\u104B]'
+    cleaned = re.sub(pattern, '', text)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
 
 def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc=None):
     st.markdown('<div class="setting-panel"><h3>🎙️ Movie Dubbing & Recap Studio</h3>', unsafe_allow_html=True)
@@ -191,8 +199,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 if script_curiosity: extra_rules += " [CURIOSITY]: Insert curiosity gaps to retain attention."
                 if script_tone: extra_rules += " [TONE]: Inject strong emotions."
 
-                # 🔴 AI PROMPT TIME LIMIT: AI ကို ဗီဒီယိုကြာချိန်နှင့် ကိုက်ညီအောင်သာ ရေးရန် အတိအကျ ကန့်သတ်လိုက်ပါသည်
+                # 🔴 AI PROMPT: မြန်မာယူနီကုဒ် အတင်းအကျပ် ထုတ်ရန်
                 extra_rules += f"\n[CRITICAL TIME LIMIT]: The video is exactly {v_dur:.1f} seconds long. Your Burmese script MUST be concise enough to be read aloud in EXACTLY {v_dur:.1f} seconds. Do NOT write a long essay."
+                extra_rules += "\n[ABSOLUTE REQUIREMENT]: The entire script must be in Myanmar Unicode script (Burmese). No Romanization, no English, no other scripts. Violation will be rejected."
                 extra_rules += "\nAt the absolute end of the response, you MUST include these two lines on separate lines:\n[TITLE: (Provide a viral Burmese title here)]\n[TAGS: #tag1 #tag2]"
 
                 raw_output_text = ""
@@ -251,7 +260,8 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 st.session_state.md_viral_title = re.sub(r'[\[\]]', '', title_match.group(1)).strip() if title_match else "Viral Movie Recap"
                 st.session_state.md_viral_tags = tags_match.group(1).strip() if tags_match else "#movierecap #myanmar"
                 clean_raw_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
-                st.session_state.md_generated_script = re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip()
+                # 🔴 BURMESE CLEANER အသုံးပြုပြီး မြန်မာယူနီကုဒ် မဟုတ်သော စာလုံးများကို ဖယ်ထုတ်သည်
+                st.session_state.md_generated_script = clean_burmese_text(re.sub(r'\[TAGS:.*?\]', '', clean_raw_text, flags=re.IGNORECASE).strip())
             except Exception as e: st.error(f"Logic Error: {e}"); st.stop()
 
         with st.spinner("⏳ [၃/၄] AI Voice Over ထုတ်လုပ်နေပါသည်... (⚡ Smart Auto-Sync ချိန်ညှိနေပါသည်)"):
@@ -300,7 +310,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         a_final_target = a_generated
                         if a_dur_raw > 0 and v_dur > 0:
                             ratio = a_dur_raw / v_dur
-                            # unlimited atempo using chaining
                             filt = get_atempo_filter(ratio)
                             if filt:
                                 synced_audio = "md_audio_synced.wav"
@@ -308,11 +317,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 if os.path.exists(synced_audio) and os.path.getsize(synced_audio) > 100:
                                     a_final_target = synced_audio
                                 else:
-                                    a_final_target = a_generated  # fallback
-                            else:
-                                a_final_target = a_generated  # no sync needed
+                                    a_final_target = a_generated
 
-                            # 🔴 SYNC FIX: now trim/pad to exact video duration
+                            # 🔴 SYNC FIX: trim/pad to exact video duration
                             exact_audio = "md_audio_exact.wav"
                             pad_filter = f"apad=whole_dur={v_dur}"
                             subprocess.run([FFMPEG_BINARY, "-y", "-i", a_final_target, "-af", pad_filter, "-t", str(v_dur), exact_audio], capture_output=True)
@@ -340,7 +347,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             with st.spinner("⏳ [၄/၄] Whisper ဖြင့် အသံနှင့် စာတန်းကို ချိန်ညှိနေပါသည်... (V52 Auto Interpolation)"):
                 pbar.progress(70, text="📝 Whisper Sync ပြုလုပ်နေပါသည်...")
 
-                # 🔴 SYNC FIX: use the exact final audio for whisper transcription
+                # 🔴 SYNC FIX: use exact final audio for transcription
                 a_sync_input = "md_audio_optimized.mp3"
                 try:
                     subprocess.run([FFMPEG_BINARY, "-y", "-i", st.session_state.md_final_audio_path, "-ar", "16000", "-ac", "1", "-b:a", "32k", a_sync_input], capture_output=True)
@@ -367,18 +374,19 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                     transcription = client_audio.audio.transcriptions.create(
                                         file=(a_sync_input, f.read()),
                                         model="whisper-large-v3",
-                                        response_format="verbose_json"
+                                        response_format="verbose_json",
+                                        language="my"              # 🔴 BURMESE LANGUAGE
                                     )
                                 else:
                                     transcription = client_audio.audio.transcriptions.create(
                                         model="whisper-1",
                                         file=f,
-                                        response_format="verbose_json"
+                                        response_format="verbose_json",
+                                        language="my"              # 🔴 BURMESE LANGUAGE
                                     )
 
                             segments = transcription.segments if hasattr(transcription, 'segments') else transcription.get('segments', [])
 
-                            # 🔴 V52 INTERPOLATION: စာတန်းထိုးကို သေသပ်စွာခွဲ၍ အချိန်နှင့် အတိအကျ ကပ်ပေးသောစနစ်
                             for segment in segments:
                                 start = float(segment['start'] if isinstance(segment, dict) else getattr(segment, 'start', 0.0))
                                 end = float(segment['end'] if isinstance(segment, dict) else getattr(segment, 'end', 0.0))
@@ -476,7 +484,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                     if subtitle_mode != "No Subtitle":
                         parsed_timestamps, _ = parse_and_save_real_srt(edited_srt, "subtitles.srt", use_fade=False)
 
-                    # 🔴 SYNC FIX: render duration = video duration only (audio is already exact)
+                    # 🔴 SYNC FIX: render duration = video duration (audio already exact)
                     render_dur = st.session_state.md_video_dur
                     if render_dur <= 0: render_dur = 10.0
 
@@ -547,7 +555,7 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                         except BaseException: pass
 
                     try:
-                        # 🔴 SYNC FIX: use render_dur (which is video_dur) as the output length
+                        # 🔴 SYNC FIX: use render_dur (video_dur) as the output length
                         (
                             ffmpeg.output(video, audio, "temp_dubbed.mp4", vcodec='libx264', pix_fmt='yuv420p', acodec='aac', preset='superfast', crf=22, t=render_dur)
                             .overwrite_output()
@@ -565,7 +573,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                                 main_a = ffmpeg.input("temp_dubbed.mp4").audio
                                 bgm_a = ffmpeg.input(bgm_path, stream_loop=-1).audio.filter('volume', bgm_volume)
                                 mixed = ffmpeg.filter([main_a, bgm_a], 'amix', inputs=2, duration='longest')
-                                # 🔴 SYNC FIX: also trim BGM mix to video duration
                                 ffmpeg.output(ffmpeg.input("temp_dubbed.mp4").video, mixed, v_final, vcodec='copy', acodec='aac', t=render_dur).overwrite_output().run(cmd=FFMPEG_BINARY, capture_stderr=True)
                             except ffmpeg.Error as e:
                                 err_msg = e.stderr.decode('utf8', errors='ignore') if e.stderr else str(e)
