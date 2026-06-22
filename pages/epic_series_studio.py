@@ -12,6 +12,7 @@ import wave
 import random
 import tempfile
 import ffmpeg
+import json5  # JSON5 သုံးရန်
 from google import genai
 from core_engines.audio_tts import generate_tts
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
@@ -40,10 +41,7 @@ def get_wav_duration(file_path):
         return 0.0
 
 def call_replicate_svd(image_path, out_path, api_token):
-    """
-    Replicate Stable Video Diffusion သုံး၍ Image မှ ဗီဒီယိုဖန်တီးပါ။
-    ထွက်လာသော Video သည် တိုတောင်းနိုင်သဖြင့် လိုအပ်ပါက Loop ပတ်ရန်။
-    """
+    """Stable Video Diffusion via Replicate API"""
     try:
         import replicate
         client = replicate.Client(api_token=api_token)
@@ -54,10 +52,9 @@ def call_replicate_svd(image_path, out_path, api_token):
                     "input_image": f,
                     "sizing_strategy": "maintain_aspect_ratio",
                     "frames_per_second": 6,
-                    "video_length": "25_frames_with_svd_xt"  # အများဆုံး 25 frames
+                    "video_length": "25_frames_with_svd_xt"
                 }
             )
-        # output သည် URL သို့မဟုတ် file-like object ပြန်ပေးတတ်သည်
         if isinstance(output, str):
             video_resp = requests.get(output)
             with open(out_path, "wb") as vf:
@@ -67,30 +64,29 @@ def call_replicate_svd(image_path, out_path, api_token):
                 vf.write(output.read())
         return True
     except Exception as e:
-        st.warning(f"Replicate API error: {e}")
+        st.warning(f"Replicate error: {e}")
         return False
 
 def animate_image_with_fallback(img_path, out_path, duration, api_key_replicate=None):
-    """
-    Replicate API ရှိလျှင် ၎င်းဖြင့် Animation လုပ်၍ မရပါက FFmpeg Zoompan ဖြင့် Fallback လုပ်မည်။
-    """
-    # Replicate ကို ဦးစားပေး
+    """Try Replicate first, else FFmpeg Zoompan"""
     if api_key_replicate:
         success = call_replicate_svd(img_path, out_path, api_key_replicate)
         if success:
-            # ထွက်လာသော Video Duration စစ်ဆေး၍ တိုလျှင် Loop ပတ်ပါ (audio duration ကိုက်အောင်)
-            rep_dur = get_wav_duration(out_path)  # get video duration using ffprobe would be better, but rough
-            if rep_dur < duration:
-                # Loop ပတ်ရန် FFmpeg ဖြင့်
-                looped = "temp_looped.mp4"
+            # Video တိုလွန်းရင် loop ပတ်မည်
+            try:
+                probe = ffmpeg.probe(out_path)
+                v_dur = float(probe['format']['duration'])
+            except:
+                v_dur = 0
+            if v_dur < duration:
+                looped = out_path + "_looped.mp4"
                 subprocess.run([FFMPEG_BINARY, "-y", "-stream_loop", "-1", "-i", out_path,
                                 "-t", str(duration), "-c", "copy", looped],
                                capture_output=True, check=True)
                 os.replace(looped, out_path)
             return True
-        # fail => fallback
 
-    # FFmpeg Zoompan Fallback (မူလအတိုင်း)
+    # Fallback FFmpeg Zoompan
     fps = 25
     total_frames = max(int(duration * fps), 1)
     pan_styles = [
@@ -131,82 +127,81 @@ with tab1:
         if not api_key_input or not uploaded_pdf or not series_name:
             st.error("API Key နှင့် PDF ကို ထည့်ပေးပါ။")
         else:
-            with st.spinner("⏳ စာအုပ်ကို အပိုင်းများခွဲပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်... (အချိန်အနည်းငယ်ကြာနိုင်ပါသည်)"):
-                tmp_path = None
+            try:
+                # ---- PyMuPDF (fitz) ဖြင့် PDF ဖတ်မည် ----
+                import fitz
+            except ImportError:
+                st.error("PyMuPDF လိုအပ်ပါသည်။ pip install pymupdf")
+                st.stop()
+            
+            # Progress placeholder
+            status = st.empty()
+            status.write("⏳ PDF ဖိုင်ကို ဖတ်နေပါသည်...")
+            
+            client = genai.Client(api_key=api_key_input.split(",")[0])
+            memory_data = {
+                "series_title": series_name,
+                "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Epic historical narration.",
+                "characters": {},
+                "parts": []
+            }
+            
+            with fitz.open(stream=uploaded_pdf.read(), filetype="pdf") as doc:
+                total_pages = doc.page_count
+                # ---- Stage 1: Character Extraction ----
+                status.write(f"👥 ဇာတ်ကောင်များကို ဖတ်နေပါသည်... (စာမျက်နှာ ၁-{total_pages})")
+                chunk_size = 15
+                for start in range(0, total_pages, chunk_size):
+                    end = min(start+chunk_size, total_pages)
+                    chunk_text = ""
+                    for i in range(start, end):
+                        chunk_text += doc[i].get_text()
+                    prompt = f"""Extract main characters from this Burmese historical text.
+                    For each character provide a detailed English visual description (face, age, 11th century Bagan attire, weapons).
+                    Output ONLY valid JSON: {{"characters": {{"CharacterName": "description"}}}}.
+                    Text: {chunk_text[:25000]}"""
+                    try:
+                        res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                        clean = res.text.replace('```json','').replace('```','').strip()
+                        chunk_chars = json5.loads(clean).get("characters", {})
+                        memory_data["characters"].update(chunk_chars)
+                    except Exception as e:
+                        st.warning(f"Character chunk error (pages {start}-{end}): {e}")
+                
+                status.write(f"✅ ဇာတ်ကောင် {len(memory_data['characters'])} ခု ဖတ်ပြီးပါပြီ။")
+                
+                # ---- Stage 2: Part Division ----
+                status.write("📖 ဇာတ်လမ်းကို ၃ မိနစ်စာ အပိုင်းများ ခွဲနေပါသည်...")
+                # Summarize whole text (first 120 pages max)
+                full_text = ""
+                for i in range(min(total_pages, 120)):
+                    full_text += doc[i].get_text()
+                char_bible = json.dumps(memory_data["characters"], ensure_ascii=False)
+                part_prompt = f"""You are an expert Burmese historical scriptwriter.
+                Based on the following Burmese historical text, divide the entire story into sequential parts.
+                Each part must be around 3 minutes of spoken narration (400-500 words).
+                For EVERY part, provide:
+                - part_number
+                - summary (1 Burmese sentence)
+                - blocks (array of scenes). Each block must have:
+                    [SCENE]: Wide cinematic shot in English, containing character visual from {char_bible}, Bagan period background, atmospheric lighting, epic graphic novel style.
+                    [SFX]: relevant sound effect (SWORD, HORSE, CROWD, etc.)
+                    [NARRATION]: Exact Burmese narration for this block.
+                Output ONLY valid JSON: {{"parts": [{{"part_number":1, "summary":"...", "blocks":[...]}}]}}.
+                Text: {full_text[:80000]}"""
                 try:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        tmp.write(uploaded_pdf.read())
-                        tmp_path = tmp.name
-
-                    client = genai.Client(api_key=api_key_input.split(",")[0])
-                    media_file = client.files.upload(file=tmp_path)
-                    while "PROCESSING" in str(client.files.get(name=media_file.name).state):
-                        time.sleep(2)
-                    
-                    setup_prompt = f"""
-                    You are an expert Burmese historical scriptwriter and visual director.
-                    The uploaded PDF is a Burmese historical book about "{series_name}".
-                    
-                    TASK:
-                    1. Extract ALL main characters with EXTREMELY detailed visual descriptions (face, age, distinctive features, 11th century Bagan era attire, weapons, accessories). Focus on UNIQUE traits so images remain consistent.
-                    2. Read the entire book and divide the story into sequential parts. Each part must be approximately **3 minutes of spoken narrative** (around 400-500 Burmese words). 
-                    3. For EACH PART, write a concise summary (1 sentence) and then break it into SCENE blocks. For every scene block you MUST provide:
-                       - [SCENE]: A rich, cinematic, wide-angle visual prompt in English. This must include:
-                            * The main character(s) from the character bible (describe their look explicitly)
-                            * Detailed background (Bagan temples, palace, battlefield, river, etc.)
-                            * Atmospheric lighting, time of day, weather
-                            * Style: "Epic 11th century Burmese historical graphic novel, masterpiece"
-                       - [SFX]: Relevant sound effect (SWORD, HORSE, THUNDER, CROWD, RIVER, NONE etc.)
-                       - [NARRATION]: The Burmese narration for this block (exact text to be spoken by narrator)
-                    
-                    CRITICAL RULES:
-                    - Scene prompt must be a WIDE SHOT (not portrait), showing the environment and characters in context.
-                    - Always maintain historical accuracy: Bagan period, ancient Burmese architecture, traditional costumes.
-                    - Use the character bible inside each scene prompt to ensure character consistency.
-                    
-                    OUTPUT FORMAT: VALID JSON ONLY. No extra text.
-                    {{
-                        "series_title": "{series_name}",
-                        "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Epic historical narration.",
-                        "characters": {{
-                            "Character1_Name": "Visual description...",
-                            "Character2_Name": "Visual description..."
-                        }},
-                        "parts": [
-                            {{
-                                "part_number": 1,
-                                "summary": "Part 1 summary in Burmese",
-                                "blocks": [
-                                    {{
-                                        "scene": "Wide cinematic shot, King Anawrahta...",
-                                        "sfx": "SWORD",
-                                        "narration": "အနော်ရထာမင်းကြီးသည်..."
-                                    }},
-                                    ...
-                                ]
-                            }},
-                            ...
-                        ]
-                    }}
-                    """
-                    
-                    res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, setup_prompt])
-                    clean_json = res.text.replace('```json', '').replace('```', '').strip()
-                    memory_data = json.loads(clean_json)
-                    if "parts" not in memory_data or not memory_data["parts"]:
-                        st.error("AI could not divide the story into parts. Please try again.")
-                        st.stop()
-                    
-                    with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
-                        json.dump(memory_data, jf, ensure_ascii=False, indent=2)
-                    
-                    client.files.delete(name=media_file.name)
-                    st.success(f"✅ မှတ်ဉာဏ်တည်ဆောက်ပြီးပါပြီ! စုစုပေါင်း အပိုင်း {len(memory_data['parts'])} ပိုင်း သိမ်းဆည်းထားပါသည်။")
+                    res = client.models.generate_content(model="gemini-2.5-flash", contents=part_prompt)
+                    clean = res.text.replace('```json','').replace('```','').strip()
+                    parts_data = json5.loads(clean)
+                    memory_data["parts"] = parts_data.get("parts", [])
                 except Exception as e:
-                    st.error(f"Memory Setup Error: {e}")
-                finally:
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
+                    st.error(f"Part division error: {e}")
+                    st.stop()
+                    
+            # Save memory
+            with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(memory_data, f, ensure_ascii=False, indent=2)
+            status.success(f"✅ မှတ်ဉာဏ်သိမ်းပြီး! အပိုင်း {len(memory_data['parts'])} ပိုင်း အဆင်သင့်ဖြစ်ပါပြီ။")
 
 with tab2:
     if os.path.exists(MEMORY_FILE):
@@ -246,7 +241,7 @@ with tab2:
             run_id = str(int(time.time()))
             pbar = st.progress(0, text="🚀 ပြင်ဆင်နေသည်...")
             
-            # Script blocks ရယူပါ (Memory ထဲမှ ထုတ်ယူပါ)
+            # Script blocks
             if selected_part and "blocks" in selected_part:
                 blocks = selected_part["blocks"]
                 st.info("✅ Pre-processed script blocks loaded from memory.")
@@ -275,7 +270,7 @@ with tab2:
                 dur = get_wav_duration(a_out)
                 if dur < 1.0: dur = 3.0
                 
-                # B. Image (ဇာတ်ကောင်ရုပ်ထွက် + Wide Shot ဖြစ်စေရန်)
+                # B. Image (ဇာတ်ကောင်ရုပ်ထွက် + Wide Shot)
                 char_bible_context = ", ".join(memory_data.get("characters", {}).values())
                 full_scene_prompt = f"{scene_prompt}, {char_bible_context}, wide cinematic shot, Bagan ancient kingdom, historical accuracy, masterpiece, 11th century graphic novel style"
                 encoded_prompt = urllib.parse.quote(full_scene_prompt)
@@ -326,7 +321,7 @@ with tab2:
                               ).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                 final_clips.append(v_out)
             
-            # Concat
+            # Concatenate
             pbar.progress(90, text="🎞️ ဗီဒီယိုအားလုံးကို ဆက်စပ်နေသည်...")
             concat_file = f"concat_list_{run_id}.txt"
             with open(concat_file, "w") as f:
