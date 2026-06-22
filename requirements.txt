@@ -8,3 +8,5 @@ groq
 openai
 requests
 python-dotenv
+json5
+pymupdf
