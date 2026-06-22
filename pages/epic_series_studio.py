@@ -13,7 +13,7 @@ import wave
 import random
 import tempfile
 import ffmpeg
-import json5                     # AI ထွက် JSON (strict မဟုတ်) အတွက်
+import json5
 from google import genai
 from core_engines.audio_tts import generate_tts
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
@@ -23,9 +23,6 @@ ffmpeg.ffmpeg = FFMPEG_BINARY
 
 # ==================== KEY ROTATION HELPER ====================
 def gemini_generate_with_keys(api_keys, model, contents, max_retries_per_key=2):
-    """
-    Comma ခြားထားသော API Keys များကို အစဉ်တိုင်းစမ်းပြီး အောင်မြင်သော Key ဖြင့် Generate လုပ်ပါမည်။
-    """
     for key in api_keys:
         try:
             client = genai.Client(api_key=key.strip())
@@ -48,7 +45,7 @@ def gemini_generate_with_keys(api_keys, model, contents, max_retries_per_key=2):
             continue
     raise Exception("သော့အားလုံး ပျက်ကုန်ပါပြီ။")
 
-# --- CORE FUNCTIONS (မူရင်းပုံစံ) ---
+# --- CORE FUNCTIONS (မူရင်းအတိုင်း) ---
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -57,7 +54,6 @@ def get_wav_duration(file_path):
         return 0.0
 
 def call_replicate_svd(image_path, out_path, api_token):
-    """Stable Video Diffusion via Replicate API"""
     try:
         import replicate
         client = replicate.Client(api_token=api_token)
@@ -84,14 +80,9 @@ def call_replicate_svd(image_path, out_path, api_token):
         return False
 
 def animate_image_with_fallback(img_path, out_path, duration, w=720, h=1280, replicate_key=None):
-    """
-    Replicate API ရှိလျှင် ၎င်းကို ဦးစားပေးသုံး၊ မရပါက FFmpeg Zoompan သုံးပါ။
-    """
-    # Replicate စမ်းမည်
     if replicate_key:
         success = call_replicate_svd(img_path, out_path, replicate_key)
         if success:
-            # ရလာတဲ့ video ရဲ့ကြာချိန် စစ်၊ လိုအပ်ရင် loop ပတ်
             try:
                 probe = ffmpeg.probe(out_path)
                 v_dur = float(probe['format']['duration'])
@@ -105,7 +96,6 @@ def animate_image_with_fallback(img_path, out_path, duration, w=720, h=1280, rep
                 os.replace(looped, out_path)
             return True
 
-    # Fallback FFmpeg Zoompan (မူရင်းအတိုင်း)
     try:
         fps = 25
         total_frames = int(duration * fps)
@@ -123,6 +113,18 @@ def animate_image_with_fallback(img_path, out_path, duration, w=720, h=1280, rep
     except Exception as e:
         st.error(f"Animation Fallback Error: {e}")
         return False
+
+# --- TTS FALLBACK HELPER ---
+def safe_generate_tts(text, voice, output_path, gemini_key=None):
+    """
+    Synergy TTS ကို ဦးစားပေးသုံးပြီး မအောင်မြင်ပါက Edge-TTS သို့ အလိုအလျောက်ပြောင်းပါ။
+    """
+    engine = "Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice else "Edge-TTS"
+    try:
+        asyncio.run(generate_tts(text, voice, output_path, engine=engine, gemini_key=gemini_key))
+    except Exception:
+        st.warning("⚠️ Synergy TTS မအောင်မြင်ပါ – Edge-TTS ဖြင့် ဆက်လုပ်ပါမည်။")
+        asyncio.run(generate_tts(text, "မြန်မာ", output_path, engine="Edge-TTS"))
 
 # --- UI & LOGIC (မူရင်းအတိုင်း) ---
 st.markdown('<div class="setting-panel"><h2>📚 Epic Series Storytelling Studio</h2>', unsafe_allow_html=True)
@@ -148,18 +150,15 @@ with tab1:
             with st.spinner("⏳ စာအုပ်တစ်အုပ်လုံးကို ဖတ်ရှုပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်..."):
                 tmp_path = None
                 try:
-                    # Temp file ဖြင့် PDF သိမ်းပါ
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                         tmp.write(uploaded_pdf.read())
                         tmp_path = tmp.name
 
-                    # ပထမ Key ကို သုံး၍ Upload (Permission ရရန်)
                     client = genai.Client(api_key=gemini_keys[0].strip())
                     media_file = client.files.upload(file=tmp_path)
                     while "PROCESSING" in str(client.files.get(name=media_file.name).state):
                         time.sleep(2)
                     
-                    # Character Prompt (Wide background ပါရန်)
                     setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each.
 Each visual prompt MUST describe the character's **full body pose, traditional 11th century Bagan attire, weapons, and the typical background environment (Bagan temples, palace, battlefield, etc.)**.
 This will be used to generate consistent character images in wide cinematic shots.
@@ -172,7 +171,6 @@ Output EXACTLY as a valid JSON format:
         "Character2_Name": "Visual description with wide background..."
     }}
 }}"""
-                    # Key Rotation သုံး၍ Generate (upload လုပ်ထားသည့် file ကို key အမျိုးမျိုးဖြင့် သုံးနိုင်သည်)
                     res = gemini_generate_with_keys(gemini_keys, "gemini-2.5-flash", [media_file, setup_prompt])
                     clean_json = res.text.replace('```json', '').replace('```', '').strip()
                     memory_data = json5.loads(clean_json)
@@ -277,19 +275,14 @@ Do not add any other text outside these blocks!"""
                 v_out = f"temp_vid_{i}.mp4"
                 anim_out = f"temp_anim_{i}.mp4"
                 
-                # A. Generate Audio (မူရင်း asyncio.run)
-                asyncio.run(generate_tts(
-                    narration, voice_char, a_out,
-                    engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
-                    gemini_key=gemini_keys[0] if gemini_keys else None
-                ))
+                # A. Generate Audio (Safe fallback)
+                safe_generate_tts(narration, voice_char, a_out, gemini_key=gemini_keys[0] if gemini_keys else None)
                 dur = get_wav_duration(a_out)
                 if dur < 1.0: dur = 3.0
                 
-                # B. Generate Image (Wide + Historical + Character Consistency)
+                # B. Generate Image (Wide + Historical)
                 char_bible_context = ", ".join(memory_data.get("characters", {}).values())
                 full_scene_prompt = f"{scene_prompt}, {char_bible_context}, wide cinematic shot, Bagan ancient kingdom, historical accuracy, masterpiece, 11th century graphic novel style"
-                # Prompt length optimization
                 if len(full_scene_prompt) > 1000:
                     full_scene_prompt = full_scene_prompt[:1000]
                 encoded_prompt = urllib.parse.quote(full_scene_prompt)
@@ -303,17 +296,15 @@ Do not add any other text outside these blocks!"""
                             img_generated = True
                             break
                         else:
-                            st.warning(f"Image API status {resp.status_code}, retrying with simple prompt...")
                             full_scene_prompt = "epic 11th century Bagan historical scene, wide cinematic shot, masterpiece"
                             encoded_prompt = urllib.parse.quote(full_scene_prompt)
                             url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true"
-                    except Exception as e:
-                        st.warning(f"Image request error: {e}")
+                    except Exception:
                         full_scene_prompt = "epic 11th century Bagan historical scene, wide cinematic shot, masterpiece"
                         encoded_prompt = urllib.parse.quote(full_scene_prompt)
                         url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true"
                 if not img_generated:
-                    st.error(f"Image generation failed for scene {i+1} after retries")
+                    st.error(f"Image generation failed for scene {i+1}")
                     st.stop()
                     
                 # C. Animate Image
@@ -362,7 +353,6 @@ Do not add any other text outside these blocks!"""
             st.session_state.render_success = True
             pbar.progress(100, text="✅ အားလုံးအောင်မြင်စွာ ပြီးစီးပါပြီ!")
             
-        # Dashboard Display
         if st.session_state.get("render_success"):
             st.balloons()
             st.success(f"🎉 Episode {ep_number} အောင်မြင်စွာ ထွက်လာပါပြီ!")
