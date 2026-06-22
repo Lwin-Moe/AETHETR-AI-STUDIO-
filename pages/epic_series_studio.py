@@ -106,11 +106,13 @@ with tab1:
                                 while "PROCESSING" in str(client.files.get(name=media_file.name).state):
                                     time.sleep(2)
                                 
+                                # 🔴 PROMPT UPDATE 1: Global Art Style ကို 2D Webtoon/Graphic Novel ပုံစံ ပြောင်းလဲသတ်မှတ်ခြင်း
                                 setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each (focus on face, 11th century Burmese attire, weapons). 
                                 Output EXACTLY as a valid JSON format:
                                 {{
                                     "series_title": "{series_name}",
                                     "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic. Do NOT change narrator perspective.",
+                                    "global_art_style": "High-quality 2D digital art, masterpiece webtoon style, cinematic lighting, warm amber tones, expressive characters",
                                     "characters": {{
                                         "Character1_Name": "Visual description...",
                                         "Character2_Name": "Visual description..."
@@ -151,7 +153,6 @@ with tab2:
         with open(MEMORY_FILE, "r", encoding="utf-8") as jf:
             memory_data = json.load(jf)
         st.success(f"📚 Active Series: {memory_data.get('series_title', 'Unknown')}")
-        st.json(memory_data.get("characters", {}))
         
         col_ep1, col_ep2 = st.columns(2)
         with col_ep1:
@@ -182,21 +183,24 @@ with tab2:
                         client = genai.Client(api_key=key)
                         char_bible = json.dumps(memory_data.get("characters", {}))
                         global_style = memory_data.get("global_narrative_style", "")
+                        global_art_style = memory_data.get("global_art_style", "High-quality 2D digital art, warm cinematic lighting")
                         
+                        # 🔴 PROMPT UPDATE 2: Scene တိုင်းကို 2D Digital Art အဖြစ် အတိအကျ ထုတ်ခိုင်းခြင်း
                         script_prompt = f"""Write Episode {ep_number} of the series based on this plot: "{ep_focus}".
                         GLOBAL STYLE: {global_style}
+                        GLOBAL ART STYLE: {global_art_style}
                         CHARACTER BIBLE: {char_bible}
                         
                         STRICT INSTRUCTIONS:
                         1. Write in engaging spoken Burmese. Start with a 3-second viral hook.
                         2. You MUST break the story into sequential blocks (scenes).
                         3. For EVERY block, you MUST provide 3 tags exactly in this order:
-                           [SCENE: Epic 11th century graphic novel art style, <inject matching character visual from Bible here>, dramatic lighting]
+                           [SCENE: 2D digital art style, webtoon aesthetic, warm cinematic lighting, <inject matching character visual from Bible here>]
                            [SFX: SWORD or HORSE or THUNDER or CROWD or NONE]
                            [NARRATION: <The Burmese spoken script for this block>]
                         
                         Example format:
-                        [SCENE: King Anawrahta holding shining spear, epic Bagan background]
+                        [SCENE: 2D digital art, King Anawrahta holding shining spear, warm amber glow, epic Bagan background]
                         [SFX: SWORD]
                         [NARRATION: အနော်ရထာမင်းကြီးသည် အရိန္ဒမာလှံကို ကိုင်ဆောင်လျက်...]
                         
@@ -280,7 +284,7 @@ with tab2:
                 anim_out = f"temp_anim_{i}.mp4"
                 temp_files.extend([a_out, i_out, v_out, anim_out])
                 
-                # ⚠️ A. Generate Audio (TTS Auto-Retry & Key Fallback ထပ်မံဖြည့်စွက်ထားသည်)
+                # A. Generate Audio
                 tts_success = False
                 last_tts_error = None
                 
@@ -291,7 +295,7 @@ with tab2:
                                                    engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
                                                    gemini_key=key))
                             tts_success = True
-                            break # အောင်မြင်ပါက attempt loop မှ ထွက်မည်
+                            break 
                         except Exception as e:
                             last_tts_error = e
                             error_str = str(e)
@@ -301,9 +305,9 @@ with tab2:
                                 time.sleep(wait_time)
                                 continue
                             else:
-                                break # 429/503 မဟုတ်လျှင် နောက် Key ပြောင်းစမ်းမည်
+                                break 
                     if tts_success:
-                        break # အောင်မြင်ပါက key loop မှ ထွက်မည်
+                        break 
                         
                 if not tts_success:
                     st.error(f"TTS Error (Scene {i+1}): All API keys failed or quota exceeded. Last error: {last_tts_error}")
@@ -313,9 +317,10 @@ with tab2:
                 if dur < 1.0:
                     dur = 3.0  
                 
-                # B. Generate Image
+                # 🔴 PROMPT UPDATE 3: Pollinations API ဆီပို့မည့် Suffix ကို Reference ပုံအတိုင်း ဖြစ်စေရန် ပြင်ဆင်ခြင်း
                 seed = random.randint(1, 1000000) 
-                encoded_prompt = urllib.parse.quote(scene_prompt + ", masterpiece, epic 11th century graphic novel, highly detailed")
+                style_suffix = ", masterpiece, 2D digital art, high quality webtoon style, cinematic lighting, warm amber glow, intricate details, trending on artstation"
+                encoded_prompt = urllib.parse.quote(scene_prompt + style_suffix)
                 url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true&seed={seed}"
                 
                 max_retries = 3
