@@ -33,7 +33,6 @@ def run_async(coro):
 
 # ==================== GEMINI HELPERS ====================
 def gemini_generate_with_single_key(api_key, model, contents, max_retries=3):
-    """API Key တစ်ခုတည်းဖြင့် retry ပြုလုပ်မည်။"""
     client = genai.Client(api_key=api_key.strip())
     for attempt in range(max_retries):
         try:
@@ -51,7 +50,6 @@ def gemini_generate_with_single_key(api_key, model, contents, max_retries=3):
     raise Exception(f"API Key {api_key[:10]}... ဖြင့် မအောင်မြင်ပါ")
 
 def gemini_generate_with_keys(api_keys, model, contents, max_retries_per_key=2):
-    """Keys များကို အလှည့်ကျ သုံးမည် (Step 2 အတွက်)"""
     for key in api_keys:
         try:
             client = genai.Client(api_key=key.strip())
@@ -75,26 +73,19 @@ def gemini_generate_with_keys(api_keys, model, contents, max_retries_per_key=2):
     raise Exception("သော့အားလုံး ပျက်ကုန်ပါပြီ။")
 
 def step1_memory_setup(pdf_bytes, api_keys, series_name):
-    """
-    Step 1 အတွက် Key rotation ပါဝင်သော Memory Setup လုပ်ငန်းစဉ်။
-    Key တစ်ခုချင်းစီအတွက် file upload + generate ကို လုပ်ဆောင်ပါမည်။
-    """
     last_error = None
     for key in api_keys:
         tmp_path = None
         try:
-            # temp file ဖန်တီးပါ
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                 tmp.write(pdf_bytes)
                 tmp_path = tmp.name
 
             client = genai.Client(api_key=key.strip())
-            # File upload
             media_file = client.files.upload(file=tmp_path)
             while "PROCESSING" in str(client.files.get(name=media_file.name).state):
                 time.sleep(2)
 
-            # Generate content
             setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each.
 Each visual prompt MUST describe the character's **full body pose, traditional 11th century Bagan attire, weapons, and the typical background environment (Bagan temples, palace, battlefield, etc.)**.
 This will be used to generate consistent character images in wide cinematic shots.
@@ -110,20 +101,17 @@ Output EXACTLY as a valid JSON format:
             res = gemini_generate_with_single_key(key, "gemini-2.5-flash", [media_file, setup_prompt])
             clean_json = res.text.replace('```json', '').replace('```', '').strip()
             memory_data = json5.loads(clean_json)
-            # အောင်မြင်ပါက file delete လုပ်ပြီး ပြန်ပေးမည်
             client.files.delete(name=media_file.name)
             return memory_data
         except Exception as e:
             last_error = e
-            # cleanup
             if tmp_path and os.path.exists(tmp_path):
                 os.unlink(tmp_path)
             st.warning(f"Key {key[:10]}... ဖြင့် မအောင်မြင်ပါ။ နောက် key ဖြင့် ထပ်ကြိုးစားပါမည်...")
             continue
-    # အားလုံးမအောင်မြင်ပါက
     raise Exception(f"Memory Setup အားလုံးမအောင်မြင်ပါ။ နောက်ဆုံးအမှား: {last_error}")
 
-# --- CORE FUNCTIONS (မူရင်းအတိုင်း) ---
+# --- CORE FUNCTIONS ---
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -216,7 +204,6 @@ with tab1:
         else:
             with st.spinner("⏳ စာအုပ်တစ်အုပ်လုံးကို ဖတ်ရှုပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်... (Key တစ်ခုမရပါက နောက် Key ဖြင့် ဆက်ကြိုးစားပါမည်)"):
                 try:
-                    # Key rotation ဖြင့် memory setup လုပ်ပါ
                     memory_data = step1_memory_setup(uploaded_pdf.read(), gemini_keys, series_name)
                     with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
                         json.dump(memory_data, jf, ensure_ascii=False, indent=2)
@@ -251,6 +238,7 @@ with tab2:
             run_id = str(int(time.time()))
             pbar = st.progress(0, text="🚀 ဇာတ်ညွှန်း ရေးသားနေပါသည်...")
 
+            # --- 1. SCRIPT GENERATION ---
             try:
                 char_bible = json.dumps(memory_data.get("characters", {}), ensure_ascii=False)
                 global_style = memory_data.get("global_narrative_style", "")
@@ -273,12 +261,12 @@ Example format:
 [NARRATION: အနော်ရထာမင်းကြီးသည် စစ်သည်တော်များနှင့်...]
 
 Do not add any other text outside these blocks!"""
-                # Step 2 တွင် key rotation သုံးပါ
                 res = gemini_generate_with_keys(gemini_keys, "gemini-2.5-flash", script_prompt)
                 raw_script = res.text.strip()
             except Exception as e:
                 st.error(f"Script Error: {e}"); st.stop()
 
+            # --- 2. PARSE BLOCKS ---
             pbar.progress(20, text="🔍 ဇာတ်ကွက်များကို စိစစ်နေပါသည်...")
             blocks = []
             current_block = {}
@@ -299,6 +287,7 @@ Do not add any other text outside these blocks!"""
                 st.error("AI ဇာတ်ညွှန်း Format လွဲချော်သွားပါသည်။ ပြန်လည် Generate လုပ်ပါ။")
                 st.stop()
 
+            # --- 3. PROCESS EACH BLOCK ---
             final_clips = []
             for i, blk in enumerate(blocks):
                 pbar.progress(30 + int((i/len(blocks))*50), text=f"🎬 Scene {i+1}/{len(blocks)} အား ဖန်တီးနေပါသည်...")
@@ -311,32 +300,57 @@ Do not add any other text outside these blocks!"""
                 v_out = f"temp_vid_{i}.mp4"
                 anim_out = f"temp_anim_{i}.mp4"
 
+                # A. Generate Audio
                 run_async(generate_tts(narration, voice_char, a_out,
                                        engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
                                        gemini_key=gemini_keys[0] if gemini_keys else None))
                 dur = get_wav_duration(a_out)
                 if dur < 1.0: dur = 3.0
 
+                # B. Generate Image with improved error handling & retry
                 char_bible_context = ", ".join(memory_data.get("characters", {}).values())
                 full_scene_prompt = f"{scene_prompt}, {char_bible_context}, wide cinematic shot, Bagan ancient kingdom, historical accuracy, masterpiece, 11th century graphic novel style"
+                # Prompt length optimization
+                if len(full_scene_prompt) > 1000:
+                    full_scene_prompt = full_scene_prompt[:1000]  # truncate to avoid URL too long
                 encoded_prompt = urllib.parse.quote(full_scene_prompt)
                 url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true"
-                try:
-                    resp = requests.get(url, timeout=30)
-                    if resp.status_code != 200 or 'image' not in resp.headers.get('Content-Type', ''):
-                        raise Exception("Invalid image response")
-                    with open(i_out, "wb") as f: f.write(resp.content)
-                except Exception as e:
-                    st.error(f"Image generation failed for scene {i}: {e}"); st.stop()
+                img_generated = False
+                # Retry up to 2 times with shorter prompt if fails
+                for retry in range(2):
+                    try:
+                        resp = requests.get(url, timeout=30)
+                        if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
+                            with open(i_out, "wb") as f:
+                                f.write(resp.content)
+                            img_generated = True
+                            break
+                        else:
+                            st.warning(f"Image API returned status {resp.status_code}, Content-Type: {resp.headers.get('Content-Type', 'N/A')}. Response snippet: {resp.text[:200]}")
+                            # Fallback: simplify prompt
+                            full_scene_prompt = f"epic 11th century Bagan historical scene, wide cinematic shot, masterpiece"
+                            encoded_prompt = urllib.parse.quote(full_scene_prompt)
+                            url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true"
+                    except Exception as e:
+                        st.warning(f"Image request error: {e}")
+                        full_scene_prompt = f"epic 11th century Bagan historical scene, wide cinematic shot, masterpiece"
+                        encoded_prompt = urllib.parse.quote(full_scene_prompt)
+                        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true"
 
+                if not img_generated:
+                    st.error(f"Image generation failed for scene {i+1} after retries")
+                    st.stop()
+
+                # C. Animate Image
                 anim_success = animate_image_with_fallback(
                     i_out, anim_out, dur,
                     replicate_key=replicate_key if use_replicate else None
                 )
                 if not anim_success:
-                    st.error(f"Animation failed for scene {i}")
+                    st.error(f"Animation failed for scene {i+1}")
                     st.stop()
 
+                # D. Add Subtitles
                 wrap_text = "\n".join(textwrap.wrap(narration, 25))
                 with open("temp_sub.txt", "w", encoding="utf-8") as tf: tf.write(wrap_text)
                 safe_font = os.path.abspath(font_choice).replace('\\', '/').replace(':', '\\:')
@@ -347,6 +361,7 @@ Do not add any other text outside these blocks!"""
                                            bordercolor='black', borderw=3,
                                            x='(w-text_w)/2', y='h-text_h-150', text_align='C')
 
+                # E. Mix Audio & SFX
                 aud_stream = ffmpeg.input(a_out).audio
                 sfx_path = f"sfx/{sfx_tag.lower()}.mp3"
                 if sfx_tag != "NONE" and os.path.exists(sfx_path):
@@ -358,6 +373,7 @@ Do not add any other text outside these blocks!"""
                               ).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                 final_clips.append(v_out)
 
+            # --- 4. MASTER CONCATENATION ---
             pbar.progress(90, text="🎞️ ဗီဒီယိုအားလုံးကို ဆက်စပ်နေပါသည်...")
             with open("concat_list.txt", "w") as f:
                 for c in final_clips: f.write(f"file '{os.path.abspath(c)}'\n")
@@ -371,6 +387,7 @@ Do not add any other text outside these blocks!"""
             st.session_state.render_success = True
             pbar.progress(100, text="✅ အားလုံးအောင်မြင်စွာ ပြီးစီးပါပြီ!")
 
+        # Dashboard Display
         if st.session_state.get("render_success"):
             st.balloons()
             st.success(f"🎉 Episode {ep_number} အောင်မြင်စွာ ထွက်လာပါပြီ!")
