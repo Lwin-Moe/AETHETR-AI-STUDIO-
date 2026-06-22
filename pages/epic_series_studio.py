@@ -39,59 +39,58 @@ def get_wav_duration(file_path):
     except Exception:
         return 0.0
 
-def call_luma_api(image_path, prompt, duration, api_key):
+def call_replicate_svd(image_path, out_path, api_token):
     """
-    Luma Dream Machine API ကို သုံးပြီး Image မှ Video ဖန်တီးခြင်း။
-    (ဤနေရာတွင် Luma API ၏ တရားဝင် endpoint ကို ထည့်သွင်းရန်လိုအပ်ပါသည်။
-     အောက်ပါ ကုဒ်သည် sample skeleton သာဖြစ်ပါသည်။)
+    Replicate Stable Video Diffusion သုံး၍ Image မှ ဗီဒီယိုဖန်တီးပါ။
+    ထွက်လာသော Video သည် တိုတောင်းနိုင်သဖြင့် လိုအပ်ပါက Loop ပတ်ရန်။
     """
     try:
-        # Luma API endpoint နဲ့ header
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        payload = {
-            "image_url": "",  # File upload ပြုလုပ်ရန် လိုအပ်ပါက base64 သို့မဟုတ် signed URL သုံးပါ
-            "prompt": prompt,
-            "duration": min(duration, 5),  # Luma က 5 sec အထိသာ ထောက်ပံ့နိုင်ပါက
-        }
-        # တကယ့် implementation အတွက် multipart/form-data ဖြင့် image file ပို့ပါ
-        # response = requests.post("https://api.luma.ai/v1/generate", json=payload, headers=headers)
-        # ရလာတဲ့ video_url ကို download လုပ်ပြီး local path သိမ်းပါ
-        # ဤနမူနာတွင် placeholder အနေဖြင့် False ပြန်ထားပါသည် (Fallback သုံးရန်)
-        return False, "Luma API not fully implemented"
-    except Exception as e:
-        return False, str(e)
-
-def call_kling_api(image_path, prompt, duration, api_key):
-    """Kling API အတွက် နမူနာ skeleton"""
-    try:
-        # Kling API implementation here
-        return False, "Kling API not fully implemented"
-    except Exception as e:
-        return False, str(e)
-
-def animate_image_with_fallback(img_path, out_path, duration, scene_prompt, api_choice=None, api_key=None):
-    """
-    Luma/Kling API ဖြင့် Animation လုပ်မည်။ မအောင်မြင်ပါက FFmpeg Zoompan သုံးမည်။
-    api_choice: "Luma" or "Kling"
-    """
-    # --- API ပိုင်း စမ်းသပ်ခြင်း ---
-    if api_key and api_choice:
-        success = False
-        if api_choice == "Luma":
-            success, msg = call_luma_api(img_path, scene_prompt, duration, api_key)
-        elif api_choice == "Kling":
-            success, msg = call_kling_api(img_path, scene_prompt, duration, api_key)
-        if success:
-            # API ကရလာတဲ့ video ကို out_path သို့ရွှေ့ / copy လုပ်ပြီး True ပြန်ပါ
-            # (video path ကို msg ထဲမှာ ထည့်ပေးနိုင်သည်)
-            return True
+        import replicate
+        client = replicate.Client(api_token=api_token)
+        with open(image_path, "rb") as f:
+            output = client.run(
+                "stability-ai/stable-video-diffusion:3f0457e4619daac51203dedb472816fd4af51f3149fa7a9e0b5ffcf1b8172438",
+                input={
+                    "input_image": f,
+                    "sizing_strategy": "maintain_aspect_ratio",
+                    "frames_per_second": 6,
+                    "video_length": "25_frames_with_svd_xt"  # အများဆုံး 25 frames
+                }
+            )
+        # output သည် URL သို့မဟုတ် file-like object ပြန်ပေးတတ်သည်
+        if isinstance(output, str):
+            video_resp = requests.get(output)
+            with open(out_path, "wb") as vf:
+                vf.write(video_resp.content)
         else:
-            st.warning(f"{api_choice} API failed: {msg}. Falling back to FFmpeg.")
+            with open(out_path, "wb") as vf:
+                vf.write(output.read())
+        return True
+    except Exception as e:
+        st.warning(f"Replicate API error: {e}")
+        return False
 
-    # --- FFmpeg Zoompan Fallback ---
+def animate_image_with_fallback(img_path, out_path, duration, api_key_replicate=None):
+    """
+    Replicate API ရှိလျှင် ၎င်းဖြင့် Animation လုပ်၍ မရပါက FFmpeg Zoompan ဖြင့် Fallback လုပ်မည်။
+    """
+    # Replicate ကို ဦးစားပေး
+    if api_key_replicate:
+        success = call_replicate_svd(img_path, out_path, api_key_replicate)
+        if success:
+            # ထွက်လာသော Video Duration စစ်ဆေး၍ တိုလျှင် Loop ပတ်ပါ (audio duration ကိုက်အောင်)
+            rep_dur = get_wav_duration(out_path)  # get video duration using ffprobe would be better, but rough
+            if rep_dur < duration:
+                # Loop ပတ်ရန် FFmpeg ဖြင့်
+                looped = "temp_looped.mp4"
+                subprocess.run([FFMPEG_BINARY, "-y", "-stream_loop", "-1", "-i", out_path,
+                                "-t", str(duration), "-c", "copy", looped],
+                               capture_output=True, check=True)
+                os.replace(looped, out_path)
+            return True
+        # fail => fallback
+
+    # FFmpeg Zoompan Fallback (မူလအတိုင်း)
     fps = 25
     total_frames = max(int(duration * fps), 1)
     pan_styles = [
@@ -114,7 +113,7 @@ def animate_image_with_fallback(img_path, out_path, duration, scene_prompt, api_
 
 # ==================== UI SETUP ====================
 st.markdown('<div class="setting-panel"><h2>📚 Epic Series Storytelling Studio</h2>', unsafe_allow_html=True)
-st.markdown("PDF စာအုပ်ကို တစ်ခါတည်းမှတ်ဉာဏ်သွင်းပြီး၊ ၃ မိနစ်စာ အပိုင်းများအလိုက် ဗီဒီယိုများ ထုတ်လုပ်ပါ။")
+st.markdown("PDF စာအုပ်ကို တစ်ခါတည်းမှတ်ဉာဏ်သွင်းပြီး၊ အပိုင်းအလိုက် ဗီဒီယိုများ ထုတ်လုပ်ပါ။")
 
 MEMORY_FILE = "series_memory.json"
 available_fonts = get_available_fonts()
@@ -132,7 +131,7 @@ with tab1:
         if not api_key_input or not uploaded_pdf or not series_name:
             st.error("API Key နှင့် PDF ကို ထည့်ပေးပါ။")
         else:
-            with st.spinner("⏳ စာအုပ်ကို အပိုင်းများခွဲပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်... (စာမျက်နှာ ၁၀၀ ကျော်ပါက အချိန်အနည်းငယ်ကြာနိုင်ပါသည်)"):
+            with st.spinner("⏳ စာအုပ်ကို အပိုင်းများခွဲပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်... (အချိန်အနည်းငယ်ကြာနိုင်ပါသည်)"):
                 tmp_path = None
                 try:
                     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -144,7 +143,6 @@ with tab1:
                     while "PROCESSING" in str(client.files.get(name=media_file.name).state):
                         time.sleep(2)
                     
-                    # --- ပိုမိုအားကောင်းသော SETUP PROMPT ---
                     setup_prompt = f"""
                     You are an expert Burmese historical scriptwriter and visual director.
                     The uploaded PDF is a Burmese historical book about "{series_name}".
@@ -194,9 +192,7 @@ with tab1:
                     
                     res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, setup_prompt])
                     clean_json = res.text.replace('```json', '').replace('```', '').strip()
-                    # Validate JSON
                     memory_data = json.loads(clean_json)
-                    # Ensure parts exist
                     if "parts" not in memory_data or not memory_data["parts"]:
                         st.error("AI could not divide the story into parts. Please try again.")
                         st.stop()
@@ -221,33 +217,28 @@ with tab2:
         
         col_ep1, col_ep2 = st.columns(2)
         with col_ep1:
-            # Part ရွေးချယ်ရန် (Number input or select)
             parts_list = memory_data.get("parts", [])
             if parts_list:
                 part_numbers = [p["part_number"] for p in parts_list]
                 ep_number = st.selectbox("ထုတ်လုပ်မည့် Part (အပိုင်း)", part_numbers)
             else:
                 ep_number = st.number_input("Episode Number (အပိုင်း):", min_value=1, value=1)
-            # Optional: Override focus (ဇာတ်လမ်းတွဲ အကျဉ်းချုပ် ပြသပြီး ပြင်ဆင်နိုင်သည်)
             selected_part = next((p for p in parts_list if p["part_number"] == ep_number), None)
             if selected_part:
                 st.info(f"📖 Part {ep_number} Summary: {selected_part.get('summary', '')}")
-                ep_focus = st.text_area("အကြောင်းအရာ ထပ်ဖြည့်ရန် (Optional)", placeholder="ဤအပိုင်းတွင် အထူးထည့်သွင်းလိုသည်များ...")
+                ep_focus = st.text_area("အထူးထည့်သွင်းလိုသည့် အကြောင်းအရာ (Optional)", placeholder="ဤအပိုင်းတွင် ထပ်ထည့်ချင်သည်များ...")
             else:
                 ep_focus = st.text_area("ဒီအပိုင်းမှာ ဘာအကြောင်း အဓိက ပြောမလဲ?", placeholder="ဥပမာ - စုက္ကတေးနဲ့ အနော်ရထာ မြင်းကပါချောင်းမှာ စီးချင်းထိုးသည့် အခန်း။")
         
         with col_ep2:
             voice_char = st.selectbox("Narrator Voice", ["Synergy Charon (Deep)", "ဇော်ဇော် (Male)", "အောင်အောင် (Deep)"])
             font_choice = st.selectbox("Subtitle Font", available_fonts)
-            # Animation API Settings
             st.markdown("---")
-            st.markdown("🎞️ **Animation API (Optional)**")
-            enable_api = st.checkbox("Luma/Kling API ဖြင့် Animation လုပ်မည်", value=False)
-            api_choice = None
-            api_anim_key = None
-            if enable_api:
-                api_choice = st.selectbox("API ရွေးချယ်ပါ", ["Luma", "Kling"])
-                api_anim_key = st.text_input(f"{api_choice} API Key", type="password")
+            st.markdown("🎞️ **Animation API (Replicate)**")
+            use_replicate = st.checkbox("Replicate API ဖြင့် Animation လုပ်မည်", value=False)
+            replicate_key = None
+            if use_replicate:
+                replicate_key = st.text_input("Replicate API Key", type="password")
             
         if st.button("🚀 GENERATE EPISODE NOW"):
             st.session_state.render_success = False
@@ -255,50 +246,14 @@ with tab2:
             run_id = str(int(time.time()))
             pbar = st.progress(0, text="🚀 ပြင်ဆင်နေသည်...")
             
-            # --- 1. SCRIPT (Memory မှယူမည်) ---
-            # Memory ထဲတွင် Part အတွက် Blocks ရှိပါက အသုံးပြုပါ၊ မရှိပါက AI ဖြင့် Generate လုပ်ပါ
+            # Script blocks ရယူပါ (Memory ထဲမှ ထုတ်ယူပါ)
             if selected_part and "blocks" in selected_part:
                 blocks = selected_part["blocks"]
                 st.info("✅ Pre-processed script blocks loaded from memory.")
             else:
-                # Fallback: မူလ AI Script Generation (Part မရှိလျှင်)
-                pbar.progress(10, text="📝 AI ဇာတ်ညွှန်း ရေးသားနေသည်...")
-                try:
-                    client = genai.Client(api_key=api_key_input.split(",")[0])
-                    char_bible = json.dumps(memory_data.get("characters", {}))
-                    global_style = memory_data.get("global_narrative_style", "")
-                    
-                    script_prompt = f"""Write Episode {ep_number} of the series based on this plot: "{ep_focus}".
-                    GLOBAL STYLE: {global_style}
-                    CHARACTER BIBLE: {char_bible}
-                    ... (same as before, but improved to wide shots) ...
-                    """
-                    res = client.models.generate_content(model="gemini-2.5-flash", contents=script_prompt)
-                    raw_script = res.text.strip()
-                    
-                    # Parse (regex)
-                    block_pattern = re.compile(
-                        r'\[SCENE:\s*(.*?)\]\s*'
-                        r'\[SFX:\s*(.*?)\]\s*'
-                        r'\[NARRATION:\s*(.*?)\](?=\s*\[SCENE:|\s*$)',
-                        re.DOTALL
-                    )
-                    matches = block_pattern.findall(raw_script)
-                    blocks = []
-                    if matches:
-                        for scene, sfx, narration in matches:
-                            narration = re.sub(r'\s+', ' ', narration).strip()
-                            blocks.append({'scene': scene.strip(), 'sfx': sfx.strip(), 'narration': narration})
-                    else:
-                        # fallback line parser
-                        ...
-                    if not blocks:
-                        st.error("AI ဇာတ်ညွှန်း Format လွဲချော်သွားပါသည်။")
-                        st.stop()
-                except Exception as e:
-                    st.error(f"Script Error: {e}"); st.stop()
+                st.error("Memory ထဲတွင် ဤအပိုင်းအတွက် Script မရှိပါ။ Step 1 ကို ပြန်လုပ်ပါ။")
+                st.stop()
             
-            # --- 2. PROCESS EACH BLOCK ---
             final_clips = []
             temp_files = []
             for i, blk in enumerate(blocks):
@@ -320,8 +275,7 @@ with tab2:
                 dur = get_wav_duration(a_out)
                 if dur < 1.0: dur = 3.0
                 
-                # B. Image (Improved: inject character bible and wide shot hints)
-                # Character bible ကို scene prompt ထဲသို့ထည့်ထားသော်လည်း ထပ်မံအားဖြည့်ရန်
+                # B. Image (ဇာတ်ကောင်ရုပ်ထွက် + Wide Shot ဖြစ်စေရန်)
                 char_bible_context = ", ".join(memory_data.get("characters", {}).values())
                 full_scene_prompt = f"{scene_prompt}, {char_bible_context}, wide cinematic shot, Bagan ancient kingdom, historical accuracy, masterpiece, 11th century graphic novel style"
                 encoded_prompt = urllib.parse.quote(full_scene_prompt)
@@ -339,9 +293,7 @@ with tab2:
                 # C. Animation
                 anim_success = animate_image_with_fallback(
                     i_out, anim_out, dur,
-                    scene_prompt=scene_prompt,  # original scene prompt for API
-                    api_choice=api_choice if enable_api else None,
-                    api_key=api_anim_key if enable_api else None
+                    api_key_replicate=replicate_key if use_replicate else None
                 )
                 if not anim_success:
                     st.error(f"Animation failed for scene {i+1}")
@@ -374,7 +326,7 @@ with tab2:
                               ).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                 final_clips.append(v_out)
             
-            # --- 3. CONCATENATE ---
+            # Concat
             pbar.progress(90, text="🎞️ ဗီဒီယိုအားလုံးကို ဆက်စပ်နေသည်...")
             concat_file = f"concat_list_{run_id}.txt"
             with open(concat_file, "w") as f:
@@ -382,15 +334,19 @@ with tab2:
                     f.write(f"file '{os.path.abspath(c)}'\n")
             temp_files.append(concat_file)
             out_final = f"EPISODE_{ep_number}_{run_id}.mp4"
-            subprocess.run([FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0",
-                            "-i", concat_file, "-c", "copy", out_final],
-                           capture_output=True, check=True)
+            try:
+                subprocess.run([FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0",
+                                "-i", concat_file, "-c", "copy", out_final],
+                               capture_output=True, check=True)
+            except subprocess.CalledProcessError as e:
+                st.error(f"Final concatenation failed: {e.stderr.decode()}")
+                st.stop()
             
             st.session_state.final_video_path = out_final
             st.session_state.render_success = True
             pbar.progress(100, text="✅ အားလုံးအောင်မြင်စွာ ပြီးစီးပါပြီ!")
             
-            # Cleanup
+            # Cleanup temp files
             for tf in temp_files:
                 if os.path.exists(tf):
                     try:
@@ -398,7 +354,6 @@ with tab2:
                     except Exception:
                         pass
                         
-        # Dashboard
         if st.session_state.get("render_success"):
             st.balloons()
             st.success(f"🎉 Episode {ep_number} အောင်မြင်စွာ ထွက်လာပါပြီ!")
