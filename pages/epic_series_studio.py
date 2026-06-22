@@ -50,7 +50,7 @@ available_fonts = get_available_fonts()
 
 tab1, tab2 = st.tabs(["⚙️ Step 1: Memory Setup (စာအုပ်ဖတ်ခိုင်းရန်)", "🎬 Step 2: Generate Episode (ဇာတ်လမ်းတွဲ ထုတ်ရန်)"])
 
-api_key_input = load_key("saved_api_key.txt") # Gemini Key ကို ယူပါမည်
+api_key_input = load_key("GEMINI_API_KEY") # Gemini Key ကို ယူပါမည်
 
 with tab1:
     st.info("💡 ပထမဆုံးအကြိမ် တစ်ခါသာ လုပ်ရန် လိုအပ်ပါသည်။ စာအုပ်ကို ဖတ်ပြီး ဇာတ်ကောင်ရုပ်ထွက်များကို အသေမှတ်သားပါမည်။")
