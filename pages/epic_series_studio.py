@@ -16,7 +16,6 @@ from core_engines.audio_tts import generate_tts
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.video_render import FFMPEG_BINARY
 
-st.set_page_config(page_title="Epic Series Studio", layout="wide", page_icon="📚")
 
 # --- CORE FUNCTIONS ---
 def get_wav_duration(file_path):
