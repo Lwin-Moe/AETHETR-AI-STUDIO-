@@ -98,9 +98,8 @@ with tab1:
                     setup_success = False
                     last_error = None
                     
-                    # ⚠️ Memory Setup အတွက် API Auto-Retry 
                     for key in keys:
-                        for attempt in range(3): # 3 ကြိမ် ကြိုးစားမည်
+                        for attempt in range(3): 
                             try:
                                 client = genai.Client(api_key=key)
                                 media_file = client.files.upload(file=tmp_path)
@@ -127,11 +126,11 @@ with tab1:
                                 break 
                             except Exception as e:
                                 last_error = e
-                                if "503" in str(e):
-                                    time.sleep(5 * (attempt + 1)) # Server ကြပ်နေပါက ၅ စက္ကန့်၊ ၁၀ စက္ကန့် စောင့်ပြီး ပြန်ခေါ်မည်
+                                if "503" in str(e) or "429" in str(e):
+                                    time.sleep(5 * (attempt + 1)) 
                                     continue
                                 else:
-                                    break # 503 မဟုတ်သော တခြား Error ဆိုလျှင် နောက် Key သို့ ကူးမည်
+                                    break 
                         if setup_success:
                             break
                             
@@ -167,19 +166,17 @@ with tab2:
             cleanup_temp_files()
             run_id = str(int(time.time()))
             
-            # Placeholder for dynamic status updates
             status_text = st.empty()
             pbar = st.progress(0)
             
-            # --- 1. SCRIPT GENERATION (API Auto-Retry ဖြင့် အဆင့်မြှင့်ထားသည်) ---
+            # --- 1. SCRIPT GENERATION ---
             keys = [k.strip() for k in api_key_input.split(",") if k.strip()]
             raw_script = None
             last_error = None
-            active_gemini_key = keys[0] if keys else ""
 
             script_success = False
             for key in keys:
-                for attempt in range(3): # 3 ကြိမ် ကြိုးစားမည်
+                for attempt in range(3): 
                     try:
                         status_text.markdown(f"**🚀 ဇာတ်ညွှန်း ရေးသားနေပါသည်... (Attempt {attempt+1})**")
                         client = genai.Client(api_key=key)
@@ -207,18 +204,17 @@ with tab2:
                         
                         res = client.models.generate_content(model="gemini-2.5-flash", contents=script_prompt)
                         raw_script = res.text.strip()
-                        active_gemini_key = key  
                         script_success = True
                         break  
                     except Exception as e:
                         last_error = e
-                        if "503" in str(e) or "429" in str(e): # 503 Unavailable သို့မဟုတ် 429 Too Many Requests
+                        if "503" in str(e) or "429" in str(e):
                             wait_time = 5 * (attempt + 1)
                             status_text.warning(f"⚠️ Server ကြပ်နေပါသည်။ စက္ကန့် {wait_time} ခေတ္တစောင့်ဆိုင်းပြီး ပြန်လည်ကြိုးစားပါမည်...")
                             time.sleep(wait_time)
                             continue
                         else:
-                            break # တခြား Error ဆိုလျှင် နောက် Key သို့ ကူးမည်
+                            break 
                 if script_success:
                     break
                     
@@ -284,13 +280,33 @@ with tab2:
                 anim_out = f"temp_anim_{i}.mp4"
                 temp_files.extend([a_out, i_out, v_out, anim_out])
                 
-                # A. Generate Audio 
-                try:
-                    run_async(generate_tts(narration, voice_char, a_out,
-                                           engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
-                                           gemini_key=active_gemini_key))
-                except Exception as e:
-                    st.error(f"TTS Error (Scene {i+1}): {e}")
+                # ⚠️ A. Generate Audio (TTS Auto-Retry & Key Fallback ထပ်မံဖြည့်စွက်ထားသည်)
+                tts_success = False
+                last_tts_error = None
+                
+                for key in keys:
+                    for attempt in range(3):
+                        try:
+                            run_async(generate_tts(narration, voice_char, a_out,
+                                                   engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
+                                                   gemini_key=key))
+                            tts_success = True
+                            break # အောင်မြင်ပါက attempt loop မှ ထွက်မည်
+                        except Exception as e:
+                            last_tts_error = e
+                            error_str = str(e)
+                            if "429" in error_str or "503" in error_str:
+                                wait_time = 5 * (attempt + 1)
+                                status_text.warning(f"⚠️ TTS API Limit (Scene {i+1}). စက္ကန့် {wait_time} စောင့်ပြီး နောက် Key ဖြင့် စမ်းသပ်နေပါသည်...")
+                                time.sleep(wait_time)
+                                continue
+                            else:
+                                break # 429/503 မဟုတ်လျှင် နောက် Key ပြောင်းစမ်းမည်
+                    if tts_success:
+                        break # အောင်မြင်ပါက key loop မှ ထွက်မည်
+                        
+                if not tts_success:
+                    st.error(f"TTS Error (Scene {i+1}): All API keys failed or quota exceeded. Last error: {last_tts_error}")
                     st.stop()
                 
                 dur = get_wav_duration(a_out)
