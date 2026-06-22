@@ -110,19 +110,25 @@ with tab1:
                                 while "PROCESSING" in str(client.files.get(name=media_file.name).state):
                                     time.sleep(2)
                                 
-                                setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each (focus on face, 11th century Burmese attire, weapons). 
+                                # 🔴 PROMPT UPDATE: တရုတ်ပုံစံ လုံးဝမထွက်စေရန်နှင့် မြန်မာ့ပုဂံခေတ် အငွေ့အသက်ကို အတင်းအကျပ် သတ်မှတ်ခြင်း
+                                setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each. 
+                                CRITICAL VISUAL RULES: The setting is strictly 11th century Ancient Myanmar (Burma) / Southeast Asia. 
+                                PROHIBITED: NO Chinese, NO Japanese, NO Hanfu, NO Samurai, NO East Asian tropes, NO queues (braids).
+                                ATTIRE: Characters must wear traditional Myanmar 'paso' (sarong), 'eingyi', and headbands. Warriors have tattoos on their thighs.
+                                
                                 Output EXACTLY as a valid JSON format:
                                 {{
                                     "series_title": "{series_name}",
-                                    "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic. Do NOT change narrator perspective.",
-                                    "global_art_style": "High-quality 2D digital art, masterpiece webtoon style, cinematic lighting, warm amber tones, expressive characters",
+                                    "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic.",
+                                    "global_art_style": "High-quality 2D digital art, masterpiece webtoon style. Strictly Ancient Myanmar/Bagan aesthetic. (Note: Mood shifts dynamically from gritty/dark in early era to golden/majestic in later era)",
                                     "characters": {{
-                                        "Character1_Name": "Visual description...",
+                                        "Character1_Name": "Visual description including Southeast Asian facial features and Burmese attire...",
                                         "Character2_Name": "Visual description..."
                                     }}
                                 }}"""
                                 res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, setup_prompt])
-                                clean_json = res.text.replace('```json', '').replace('```', '').strip()
+                                clean_json = res.text.replace('```json', '').replace('
+```', '').strip()
                                 with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
                                     jf.write(clean_json)
                                 client.files.delete(name=media_file.name)
@@ -160,7 +166,7 @@ with tab2:
         col_ep1, col_ep2 = st.columns(2)
         with col_ep1:
             ep_number = st.number_input("Episode Number (အပိုင်း):", min_value=1, value=1)
-            ep_focus = st.text_area("ဒီအပိုင်းမှာ ဘာအကြောင်း အဓိက ပြောမလဲ?", placeholder="ဥပမာ - အနော်ရထာနှင့် ရှင်အရဟံ တွေ့ဆုံခြင်း။ အရည်းကြီးတို့၏ ပန်းဦးလွှတ်ပွဲကို နှိမ်နင်းခြင်း။")
+            ep_focus = st.text_area("ဒီအပိုင်းမှာ ဘာအကြောင်း အဓိက ပြောမလဲ?", placeholder="ဥပမာ - ကွမ်းဆော်ကြောင်းဖြူမင်းကြီးကို ကျည်စိုးနှင့် စုက္ကတေးတို့က လှည့်စားပြီး နန်းချကာ ရဟန်းဝတ်ခိုင်းလိုက်သည့် အဖြစ်အပျက်။ အရည်းကြီးတို့၏ လွှမ်းမိုးမှု။")
         with col_ep2:
             voice_char = st.selectbox("Narrator Voice", ["Synergy Charon (Deep)", "ဇော်ဇော် (Male)", "အောင်အောင် (Deep)"])
             font_choice = st.selectbox("Subtitle Font", available_fonts)
@@ -182,25 +188,24 @@ with tab2:
                         client = genai.Client(api_key=key)
                         char_bible = json.dumps(memory_data.get("characters", {}))
                         global_style = memory_data.get("global_narrative_style", "")
-                        global_art_style = memory_data.get("global_art_style", "High-quality 2D digital art, warm cinematic lighting")
+                        global_art_style = memory_data.get("global_art_style", "High-quality 2D digital art, masterpiece webtoon style")
                         
-                        # 🔴 PROMPT UPDATE: သမိုင်းကြောင်း မလွဲစေရန် အတိအကျ သတိပေးချက် ထည့်သွင်းခြင်း
                         script_prompt = f"""Write Episode {ep_number} of the series based on this plot: "{ep_focus}".
                         GLOBAL STYLE: {global_style}
                         GLOBAL ART STYLE: {global_art_style}
                         CHARACTER BIBLE: {char_bible}
                         
-                        CRITICAL STORY CONTEXT (DO NOT HALLUCINATE):
-                        - In Bagan history and "O'Bae Anawrahta", the "Pan U Lwat" (Flower Offering / First Fruits) is a corrupt and abusive practice done ONLY by the "Ari Monks" (အရည်းကြီး).
-                        - Shin Arahan (ရှင်အရဟံ) is a pure Theravada monk who completely OPPOSES the Ari monks and their Pan U Lwat practice.
-                        - DO NOT ever make Shin Arahan guide, support, or participate in Pan U Lwat.
-                        - Write accurate historical/character actions based strictly on the user's plot.
+                        CRITICAL WORLD-BUILDING & TIMELINE AWARENESS:
+                        1. Adapt the Vibe: The visual tone MUST match the timeline of the provided plot.
+                           - EARLY ERA (Pre-reforms, Kyisoe/Sukkate, Ari Monks): Use "dark cinematic lighting, gritty, rustic, gloomy". DO NOT mention golden pagodas. Monks are "Ari monks in dark robes".
+                           - GOLDEN ERA (Shin Arahan, Thaton conquest, Later years): Use "warm golden lighting, majestic, glorious". Include "golden pagodas, thriving empire". Monks are "Theravada monks in saffron robes".
+                        2. Cultural Accuracy: ALL scenes MUST be explicitly tagged with "Ancient Myanmar aesthetic, Southeast Asian, traditional Burmese attire". Absolutely NO Chinese or East Asian clothing, architecture, or hairstyles.
                         
                         STRICT INSTRUCTIONS:
                         1. Write in engaging spoken Burmese. Start with a 3-second viral hook.
                         2. You MUST break the story into sequential blocks (scenes).
                         3. For EVERY block, you MUST provide 3 tags exactly in this order:
-                           [SCENE: 2D digital art style, webtoon aesthetic, warm cinematic lighting, <inject matching character visual from Bible here>]
+                           [SCENE: <Include Dynamic Art Style Tags Based on Era>, STRICTLY Ancient Myanmar/Bagan aesthetic, NO Chinese/East Asian tropes, <inject matching character visual from Bible here>]
                            [SFX: SWORD or HORSE or THUNDER or CROWD or NONE]
                            [NARRATION: <The Burmese spoken script for this block>]
                         
@@ -243,7 +248,7 @@ with tab2:
                 pbar = st.progress(0)
                 keys = [k.strip() for k in api_key_input.split(",") if k.strip()]
                 
-                # --- PARSE BLOCKS (User ပြင်ထားသော edited_script ကို သုံးမည်) ---
+                # --- PARSE BLOCKS ---
                 status_text_render.markdown("**🔍 ဇာတ်ကွက်များကို စိစစ်နေပါသည်...**")
                 pbar.progress(10)
                 block_pattern = re.compile(
@@ -334,9 +339,9 @@ with tab2:
                     if dur < 1.0:
                         dur = 3.0  
                     
-                    # B. Generate Image
+                    # 🔴 PROMPT UPDATE: မြန်မာမှု အငွေ့အသက်ကို Image API ဆီ အတင်းအကျပ် ပို့ပေးခြင်း
                     seed = random.randint(1, 1000000) 
-                    style_suffix = ", masterpiece, 2D digital art, high quality webtoon style, cinematic lighting, warm amber glow, intricate details, trending on artstation"
+                    style_suffix = ", masterpiece, 2D digital art, webtoon style, STRICTLY ancient Burmese aesthetic, Southeast Asian, traditional Myanmar clothing, NO Chinese, NO Japanese, trending on artstation"
                     encoded_prompt = urllib.parse.quote(scene_prompt + style_suffix)
                     url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true&seed={seed}"
                     
