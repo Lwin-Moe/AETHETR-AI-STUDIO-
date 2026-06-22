@@ -47,8 +47,8 @@ st.markdown('<div class="sub-title">AI Studio V52 ⚡ SaaS Edition</div>', unsaf
 
 with st.sidebar:
     st.markdown("### 🧭 Navigation Menu")
-    # 🔴 Studio အသစ်ကို List ထဲမှာ ထပ်တိုးလိုက်ပါ
-    app_mode = st.radio("Select Studio Mode:", ["🎙️ Movie Dubbing Studio", "🎙️ Faceless Channel Studio", "🌍 Global Translation Studio", "🎥 Veo Video Studio", "🎵 Lyria Music Studio"])
+    # 🔴 Epic Series Studio ကို Menu တွင် ထပ်တိုးထားပါသည်
+    app_mode = st.radio("Select Studio Mode:", ["🎙️ Movie Dubbing Studio", "🎙️ Faceless Channel Studio", "🌍 Global Translation Studio", "📚 Epic Series Storytelling Studio", "🎥 Veo Video Studio", "🎵 Lyria Music Studio"])
     st.markdown("---")
 
     st.markdown("### 💾 Project Save & Load")
@@ -99,10 +99,14 @@ elif app_mode == "🎙️ Faceless Channel Studio":
     from pages.faceless_channel import render_faceless_studio
     render_faceless_studio(api_key_input, saved_gemini, groq_key_fc)
 
-# 🔴 GLOBAL TRANSLATION STUDIO အသစ်ကို လှမ်းခေါ်သည့် အပိုင်း (အသစ်ထပ်တိုးရန်)
 elif app_mode == "🌍 Global Translation Studio":
     from pages.translation_studio import render_translation_studio
     render_translation_studio(api_key_input, saved_gemini, ai_provider, groq_key_fc)
+
+# 🔴 EPIC SERIES STUDIO အသစ်ကို လှမ်းခေါ်သည့် အပိုင်း (Dynamic Execution)
+elif app_mode == "📚 Epic Series Storytelling Studio":
+    with open("pages/epic_series_studio.py", encoding="utf-8") as f:
+        exec(f.read())
     
 elif app_mode == "🎥 Veo Video Studio":
     st.markdown('<div class="setting-panel"><h3>🎥 Veo 3.0 Cinematic Video Generator</h3>', unsafe_allow_html=True)
