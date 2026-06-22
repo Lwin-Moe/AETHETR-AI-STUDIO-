@@ -12,18 +12,18 @@ import wave
 import random
 import tempfile
 import ffmpeg
-import json5  # JSON5 သုံးရန်
+import json5
 from google import genai
+from google.genai import types
 from core_engines.audio_tts import generate_tts
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.video_render import FFMPEG_BINARY
 
-# ffmpeg-python binary path
+# ffmpeg-python binary
 ffmpeg.ffmpeg = FFMPEG_BINARY
 
 # ==================== ASYNC WRAPPER ====================
 def run_async(coro):
-    """Safe async runner for Streamlit (avoid event loop conflict)"""
     def _run():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
@@ -31,6 +31,35 @@ def run_async(coro):
     import concurrent.futures
     with concurrent.futures.ThreadPoolExecutor() as executor:
         return executor.submit(_run).result()
+
+# ==================== GEMINI RETRY HELPER ====================
+def gemini_generate(client, model_name, contents, max_retries=5):
+    """
+    Gemini API ကို retry logic ဖြင့် ခေါ်ဆိုပါသည်။
+    503 သို့မဟုတ် အခြား transient error များတွင် ပြန်ကြိုးစားပါ။
+    """
+    fallback_models = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    if model_name in fallback_models:
+        fallback_models.remove(model_name)
+        fallback_models.insert(0, model_name)  # ဦးစားပေးမော်ဒယ် အရင်သုံးမည်
+    else:
+        fallback_models = [model_name] + fallback_models
+
+    for model in fallback_models:
+        for attempt in range(max_retries):
+            try:
+                res = client.models.generate_content(model=model, contents=contents)
+                return res
+            except Exception as e:
+                err_str = str(e)
+                if "503" in err_str or "UNAVAILABLE" in err_str or "429" in err_str or "RESOURCE_EXHAUSTED" in err_str:
+                    wait = 2 ** attempt
+                    st.warning(f"API ပြဿနာ ({model}) – {wait} စက္ကန့်စောင့်ပါ...")
+                    time.sleep(wait)
+                    continue
+                else:
+                    raise e
+    raise Exception("Gemini API ခေါ်ဆို၍မရပါ – မော်ဒယ်အားလုံး ရနိုင်မည်မဟုတ်။")
 
 # ==================== CORE FUNCTIONS ====================
 def get_wav_duration(file_path):
@@ -41,7 +70,6 @@ def get_wav_duration(file_path):
         return 0.0
 
 def call_replicate_svd(image_path, out_path, api_token):
-    """Stable Video Diffusion via Replicate API"""
     try:
         import replicate
         client = replicate.Client(api_token=api_token)
@@ -68,11 +96,9 @@ def call_replicate_svd(image_path, out_path, api_token):
         return False
 
 def animate_image_with_fallback(img_path, out_path, duration, api_key_replicate=None):
-    """Try Replicate first, else FFmpeg Zoompan"""
     if api_key_replicate:
         success = call_replicate_svd(img_path, out_path, api_key_replicate)
         if success:
-            # Video တိုလွန်းရင် loop ပတ်မည်
             try:
                 probe = ffmpeg.probe(out_path)
                 v_dur = float(probe['format']['duration'])
@@ -107,7 +133,7 @@ def animate_image_with_fallback(img_path, out_path, duration, api_key_replicate=
         st.error(f"Animation Fallback Error: {e.stderr.decode()}")
         return False
 
-# ==================== UI SETUP ====================
+# ==================== UI ====================
 st.markdown('<div class="setting-panel"><h2>📚 Epic Series Storytelling Studio</h2>', unsafe_allow_html=True)
 st.markdown("PDF စာအုပ်ကို တစ်ခါတည်းမှတ်ဉာဏ်သွင်းပြီး၊ အပိုင်းအလိုက် ဗီဒီယိုများ ထုတ်လုပ်ပါ။")
 
@@ -122,22 +148,20 @@ with tab1:
     st.info("💡 ပထမဆုံးအကြိမ်သာ လုပ်ပါ။ စာအုပ်ကို Part အလိုက်ခွဲပြီး ဇာတ်ကောင်ရုပ်ထွက်များကို မှတ်သားပါမည်။")
     series_name = st.text_input("ဇာတ်လမ်းတွဲ အမည်:", placeholder="ဥပမာ - အိုဘယ့် အနော်ရထာ")
     uploaded_pdf = st.file_uploader("PDF စာအုပ် တင်ပါ", type=["pdf"])
-    
+
     if st.button("🧠 AI ကို ဖတ်ခိုင်းပြီး မှတ်ဉာဏ်တည်ဆောက်ပါ"):
         if not api_key_input or not uploaded_pdf or not series_name:
             st.error("API Key နှင့် PDF ကို ထည့်ပေးပါ။")
         else:
             try:
-                # ---- PyMuPDF (fitz) ဖြင့် PDF ဖတ်မည် ----
                 import fitz
             except ImportError:
                 st.error("PyMuPDF လိုအပ်ပါသည်။ pip install pymupdf")
                 st.stop()
-            
-            # Progress placeholder
+
             status = st.empty()
             status.write("⏳ PDF ဖိုင်ကို ဖတ်နေပါသည်...")
-            
+
             client = genai.Client(api_key=api_key_input.split(",")[0])
             memory_data = {
                 "series_title": series_name,
@@ -145,10 +169,10 @@ with tab1:
                 "characters": {},
                 "parts": []
             }
-            
+
             with fitz.open(stream=uploaded_pdf.read(), filetype="pdf") as doc:
                 total_pages = doc.page_count
-                # ---- Stage 1: Character Extraction ----
+                # --- Stage 1: Characters ---
                 status.write(f"👥 ဇာတ်ကောင်များကို ဖတ်နေပါသည်... (စာမျက်နှာ ၁-{total_pages})")
                 chunk_size = 15
                 for start in range(0, total_pages, chunk_size):
@@ -157,48 +181,47 @@ with tab1:
                     for i in range(start, end):
                         chunk_text += doc[i].get_text()
                     prompt = f"""Extract main characters from this Burmese historical text.
-                    For each character provide a detailed English visual description (face, age, 11th century Bagan attire, weapons).
-                    Output ONLY valid JSON: {{"characters": {{"CharacterName": "description"}}}}.
-                    Text: {chunk_text[:25000]}"""
+For each character provide a detailed English visual description (face, age, 11th century Bagan attire, weapons).
+Output ONLY valid JSON: {{"characters": {{"CharacterName": "description"}}}}.
+Text: {chunk_text[:25000]}"""
                     try:
-                        res = client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
+                        res = gemini_generate(client, "gemini-2.5-flash", prompt)
                         clean = res.text.replace('```json','').replace('```','').strip()
                         chunk_chars = json5.loads(clean).get("characters", {})
                         memory_data["characters"].update(chunk_chars)
                     except Exception as e:
                         st.warning(f"Character chunk error (pages {start}-{end}): {e}")
-                
+
                 status.write(f"✅ ဇာတ်ကောင် {len(memory_data['characters'])} ခု ဖတ်ပြီးပါပြီ။")
-                
-                # ---- Stage 2: Part Division ----
+
+                # --- Stage 2: Parts ---
                 status.write("📖 ဇာတ်လမ်းကို ၃ မိနစ်စာ အပိုင်းများ ခွဲနေပါသည်...")
-                # Summarize whole text (first 120 pages max)
                 full_text = ""
                 for i in range(min(total_pages, 120)):
                     full_text += doc[i].get_text()
                 char_bible = json.dumps(memory_data["characters"], ensure_ascii=False)
                 part_prompt = f"""You are an expert Burmese historical scriptwriter.
-                Based on the following Burmese historical text, divide the entire story into sequential parts.
-                Each part must be around 3 minutes of spoken narration (400-500 words).
-                For EVERY part, provide:
-                - part_number
-                - summary (1 Burmese sentence)
-                - blocks (array of scenes). Each block must have:
-                    [SCENE]: Wide cinematic shot in English, containing character visual from {char_bible}, Bagan period background, atmospheric lighting, epic graphic novel style.
-                    [SFX]: relevant sound effect (SWORD, HORSE, CROWD, etc.)
-                    [NARRATION]: Exact Burmese narration for this block.
-                Output ONLY valid JSON: {{"parts": [{{"part_number":1, "summary":"...", "blocks":[...]}}]}}.
-                Text: {full_text[:80000]}"""
+Based on the following Burmese historical text, divide the entire story into sequential parts.
+Each part must be around 3 minutes of spoken narration (400-500 words).
+For EVERY part, provide:
+- part_number
+- summary (1 Burmese sentence)
+- blocks (array of scenes). Each block must have:
+    [SCENE]: Wide cinematic shot in English, containing character visual from {char_bible}, Bagan period background, atmospheric lighting, epic graphic novel style.
+    [SFX]: relevant sound effect (SWORD, HORSE, CROWD, etc.)
+    [NARRATION]: Exact Burmese narration for this block.
+Output ONLY valid JSON: {{"parts": [{{"part_number":1, "summary":"...", "blocks":[...]}}]}}.
+Text: {full_text[:80000]}"""
                 try:
-                    res = client.models.generate_content(model="gemini-2.5-flash", contents=part_prompt)
+                    res = gemini_generate(client, "gemini-2.5-flash", part_prompt)
                     clean = res.text.replace('```json','').replace('```','').strip()
                     parts_data = json5.loads(clean)
                     memory_data["parts"] = parts_data.get("parts", [])
                 except Exception as e:
                     st.error(f"Part division error: {e}")
                     st.stop()
-                    
-            # Save memory
+
+            # Save
             with open(MEMORY_FILE, "w", encoding="utf-8") as f:
                 json.dump(memory_data, f, ensure_ascii=False, indent=2)
             status.success(f"✅ မှတ်ဉာဏ်သိမ်းပြီး! အပိုင်း {len(memory_data['parts'])} ပိုင်း အဆင်သင့်ဖြစ်ပါပြီ။")
@@ -209,7 +232,7 @@ with tab2:
             memory_data = json.load(jf)
         st.success(f"📚 Active Series: {memory_data.get('series_title', 'Unknown')} (Parts: {len(memory_data.get('parts', []))})")
         st.json(memory_data.get("characters", {}))
-        
+
         col_ep1, col_ep2 = st.columns(2)
         with col_ep1:
             parts_list = memory_data.get("parts", [])
@@ -224,7 +247,7 @@ with tab2:
                 ep_focus = st.text_area("အထူးထည့်သွင်းလိုသည့် အကြောင်းအရာ (Optional)", placeholder="ဤအပိုင်းတွင် ထပ်ထည့်ချင်သည်များ...")
             else:
                 ep_focus = st.text_area("ဒီအပိုင်းမှာ ဘာအကြောင်း အဓိက ပြောမလဲ?", placeholder="ဥပမာ - စုက္ကတေးနဲ့ အနော်ရထာ မြင်းကပါချောင်းမှာ စီးချင်းထိုးသည့် အခန်း။")
-        
+
         with col_ep2:
             voice_char = st.selectbox("Narrator Voice", ["Synergy Charon (Deep)", "ဇော်ဇော် (Male)", "အောင်အောင် (Deep)"])
             font_choice = st.selectbox("Subtitle Font", available_fonts)
@@ -234,21 +257,20 @@ with tab2:
             replicate_key = None
             if use_replicate:
                 replicate_key = st.text_input("Replicate API Key", type="password")
-            
+
         if st.button("🚀 GENERATE EPISODE NOW"):
             st.session_state.render_success = False
             cleanup_temp_files()
             run_id = str(int(time.time()))
             pbar = st.progress(0, text="🚀 ပြင်ဆင်နေသည်...")
-            
-            # Script blocks
+
             if selected_part and "blocks" in selected_part:
                 blocks = selected_part["blocks"]
                 st.info("✅ Pre-processed script blocks loaded from memory.")
             else:
                 st.error("Memory ထဲတွင် ဤအပိုင်းအတွက် Script မရှိပါ။ Step 1 ကို ပြန်လုပ်ပါ။")
                 st.stop()
-            
+
             final_clips = []
             temp_files = []
             for i, blk in enumerate(blocks):
@@ -256,21 +278,21 @@ with tab2:
                 narration = blk['narration']
                 scene_prompt = blk['scene']
                 sfx_tag = blk['sfx']
-                
+
                 a_out = f"temp_aud_{i}.wav"
                 i_out = f"temp_img_{i}.jpg"
                 v_out = f"temp_vid_{i}.mp4"
                 anim_out = f"temp_anim_{i}.mp4"
                 temp_files.extend([a_out, i_out, v_out, anim_out])
-                
-                # A. Audio
+
+                # Audio
                 run_async(generate_tts(narration, voice_char, a_out,
                                        engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
                                        gemini_key=api_key_input))
                 dur = get_wav_duration(a_out)
                 if dur < 1.0: dur = 3.0
-                
-                # B. Image (ဇာတ်ကောင်ရုပ်ထွက် + Wide Shot)
+
+                # Image
                 char_bible_context = ", ".join(memory_data.get("characters", {}).values())
                 full_scene_prompt = f"{scene_prompt}, {char_bible_context}, wide cinematic shot, Bagan ancient kingdom, historical accuracy, masterpiece, 11th century graphic novel style"
                 encoded_prompt = urllib.parse.quote(full_scene_prompt)
@@ -284,8 +306,8 @@ with tab2:
                 except Exception as e:
                     st.error(f"Image generation failed for scene {i+1}: {e}")
                     st.stop()
-                
-                # C. Animation
+
+                # Animation
                 anim_success = animate_image_with_fallback(
                     i_out, anim_out, dur,
                     api_key_replicate=replicate_key if use_replicate else None
@@ -293,8 +315,8 @@ with tab2:
                 if not anim_success:
                     st.error(f"Animation failed for scene {i+1}")
                     st.stop()
-                
-                # D. Subtitles
+
+                # Subtitles
                 safe_text = narration.replace(':', '\\:').replace("'", "'\\''")
                 font_path = os.path.abspath(font_choice).replace('\\', '/')
                 vid_stream = ffmpeg.input(anim_out).video
@@ -308,20 +330,20 @@ with tab2:
                                            x='(w-text_w)/2',
                                            y='h-text_h-150',
                                            text_align='C')
-                
-                # E. Audio mix
+
+                # Audio mix
                 aud_stream = ffmpeg.input(a_out).audio
                 sfx_path = f"sfx/{sfx_tag.lower()}.mp3"
                 if sfx_tag != "NONE" and os.path.exists(sfx_path):
                     sfx_stream = ffmpeg.input(sfx_path).audio.filter('volume', 0.8)
                     aud_stream = ffmpeg.filter([aud_stream, sfx_stream], 'amix', inputs=2, duration='first')
-                
+
                 ffmpeg.output(vid_stream, aud_stream, v_out,
                               vcodec='libx264', acodec='aac', t=dur
                               ).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
                 final_clips.append(v_out)
-            
-            # Concatenate
+
+            # Concat
             pbar.progress(90, text="🎞️ ဗီဒီယိုအားလုံးကို ဆက်စပ်နေသည်...")
             concat_file = f"concat_list_{run_id}.txt"
             with open(concat_file, "w") as f:
@@ -336,19 +358,18 @@ with tab2:
             except subprocess.CalledProcessError as e:
                 st.error(f"Final concatenation failed: {e.stderr.decode()}")
                 st.stop()
-            
+
             st.session_state.final_video_path = out_final
             st.session_state.render_success = True
             pbar.progress(100, text="✅ အားလုံးအောင်မြင်စွာ ပြီးစီးပါပြီ!")
-            
-            # Cleanup temp files
+
             for tf in temp_files:
                 if os.path.exists(tf):
                     try:
                         os.remove(tf)
                     except Exception:
                         pass
-                        
+
         if st.session_state.get("render_success"):
             st.balloons()
             st.success(f"🎉 Episode {ep_number} အောင်မြင်စွာ ထွက်လာပါပြီ!")
