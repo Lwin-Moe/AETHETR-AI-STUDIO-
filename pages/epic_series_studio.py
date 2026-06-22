@@ -10,8 +10,8 @@ import urllib.parse
 import requests
 import textwrap
 import wave
-import random  # ⚠️ ပျောက်နေသော random module ကို ထည့်ထားပါသည်
-import tempfile  # ⚠️ tempfile ဖြင့် အမှိုက်ဖိုင်များ စနစ်တကျ ဖျက်နိုင်ရန်
+import random  
+import tempfile  
 import ffmpeg
 from google import genai
 from core_engines.audio_tts import generate_tts
@@ -33,7 +33,7 @@ def run_async(coro):
         future = executor.submit(_run)
         return future.result()
 
-# --- CORE FUNCTIONS (ပြင်ဆင်ထားသည်) ---
+# --- CORE FUNCTIONS ---
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -48,13 +48,9 @@ def animate_image_with_fallback(img_path, out_path, duration, w=720, h=1280):
     if total_frames < 1:
         total_frames = 1
     
-    # Pan/Zoom ပုံစံ ၃ မျိုး (FFmpeg zoompan expression စစ်ဆေးပြီးသား)
     pan_styles = [
-        # Center Zoom In
         f"scale=-2:2000,zoompan=z='min(zoom+0.001,1.2)':d={total_frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h},fps={fps}",
-        # Slow Pan Right
         f"scale=-2:2000,zoompan=z='1.15':d={total_frames}:x='if(lte(on,{total_frames}),on*2,0)':y='ih/2-(ih/zoom/2)':s={w}x{h},fps={fps}",
-        # Slow Pan Down
         f"scale=-2:2000,zoompan=z='1.15':d={total_frames}:x='iw/2-(iw/zoom/2)':y='if(lte(on,{total_frames}),on*2,0)':s={w}x{h},fps={fps}"
     ]
     selected_style = random.choice(pan_styles)
@@ -72,7 +68,7 @@ def animate_image_with_fallback(img_path, out_path, duration, w=720, h=1280):
         st.error(f"Animation Fallback Error: {e.stderr.decode()}")
         return False
 
-# --- UI & LOGIC (မပြောင်းလဲပါ) ---
+# --- UI & LOGIC ---
 st.markdown('<div class="setting-panel"><h2>📚 Epic Series Storytelling Studio</h2>', unsafe_allow_html=True)
 st.markdown("PDF စာအုပ်ကို တစ်ခါတည်းမှတ်ဉာဏ်သွင်းပြီး၊ Consistency အပြည့်အဝဖြင့် ဇာတ်လမ်းတွဲများ ဆက်တိုက်ထုတ်လုပ်ပါ။")
 
@@ -98,28 +94,47 @@ with tab1:
                         tmp.write(uploaded_pdf.read())
                         tmp_path = tmp.name
 
-                    client = genai.Client(api_key=api_key_input.split(",")[0])
-                    media_file = client.files.upload(file=tmp_path)
-                    while "PROCESSING" in str(client.files.get(name=media_file.name).state):
-                        time.sleep(2)
+                    # ⚠️ API Key Auto-Fallback စနစ် (Key တစ်ခုမရလျှင် နောက်တစ်ခုပြောင်းသုံးမည်)
+                    keys = [k.strip() for k in api_key_input.split(",") if k.strip()]
+                    setup_success = False
+                    last_error = None
                     
-                    setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each (focus on face, 11th century Burmese attire, weapons). 
-                    Output EXACTLY as a valid JSON format:
-                    {{
-                        "series_title": "{series_name}",
-                        "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic. Do NOT change narrator perspective.",
-                        "characters": {{
-                            "Character1_Name": "Visual description...",
-                            "Character2_Name": "Visual description..."
-                        }}
-                    }}"""
-                    res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, setup_prompt])
-                    clean_json = res.text.replace('```json', '').replace('```', '').strip()
-                    with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
-                        jf.write(clean_json)
-                    client.files.delete(name=media_file.name)
+                    for key in keys:
+                        try:
+                            client = genai.Client(api_key=key)
+                            media_file = client.files.upload(file=tmp_path)
+                            while "PROCESSING" in str(client.files.get(name=media_file.name).state):
+                                time.sleep(2)
+                            
+                            setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each (focus on face, 11th century Burmese attire, weapons). 
+                            Output EXACTLY as a valid JSON format:
+                            {{
+                                "series_title": "{series_name}",
+                                "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic. Do NOT change narrator perspective.",
+                                "characters": {{
+                                    "Character1_Name": "Visual description...",
+                                    "Character2_Name": "Visual description..."
+                                }}
+                            }}"""
+                            res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, setup_prompt])
+                            clean_json = res.text.replace('```json', '').replace('```', '').strip()
+                            with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
+                                jf.write(clean_json)
+                            client.files.delete(name=media_file.name)
+                            
+                            setup_success = True
+                            break  # အောင်မြင်ပါက loop မှ ထွက်မည်
+                        except Exception as e:
+                            last_error = e
+                            continue  # Error တက်ပါက နောက် Key သို့ ကူးမည်
+                            
                     os.unlink(tmp_path)
-                    st.success("✅ မှတ်ဉာဏ်တည်ဆောက်ခြင်း ပြီးစီးပါပြီ! Step 2 သို့ သွားပါ။")
+                    
+                    if setup_success:
+                        st.success("✅ မှတ်ဉာဏ်တည်ဆောက်ခြင်း ပြီးစီးပါပြီ! Step 2 သို့ သွားပါ။")
+                    else:
+                        st.error(f"Memory Setup Error: All API keys failed. Last error: {last_error}")
+                        
                 except Exception as e:
                     st.error(f"Memory Setup Error: {e}")
                     if os.path.exists(tmp_path):
@@ -146,37 +161,50 @@ with tab2:
             run_id = str(int(time.time()))
             pbar = st.progress(0, text="🚀 ဇာတ်ညွှန်း ရေးသားနေပါသည်...")
             
-            # --- 1. SCRIPT GENERATION (မူလအတိုင်း) ---
-            try:
-                client = genai.Client(api_key=api_key_input.split(",")[0])
-                char_bible = json.dumps(memory_data.get("characters", {}))
-                global_style = memory_data.get("global_narrative_style", "")
+            # --- 1. SCRIPT GENERATION (API Key Auto-Fallback ဖြင့် အဆင့်မြှင့်ထားသည်) ---
+            keys = [k.strip() for k in api_key_input.split(",") if k.strip()]
+            raw_script = None
+            last_error = None
+            active_gemini_key = keys[0] if keys else ""
+
+            for key in keys:
+                try:
+                    client = genai.Client(api_key=key)
+                    char_bible = json.dumps(memory_data.get("characters", {}))
+                    global_style = memory_data.get("global_narrative_style", "")
+                    
+                    script_prompt = f"""Write Episode {ep_number} of the series based on this plot: "{ep_focus}".
+                    GLOBAL STYLE: {global_style}
+                    CHARACTER BIBLE: {char_bible}
+                    
+                    STRICT INSTRUCTIONS:
+                    1. Write in engaging spoken Burmese. Start with a 3-second viral hook.
+                    2. You MUST break the story into sequential blocks (scenes).
+                    3. For EVERY block, you MUST provide 3 tags exactly in this order:
+                       [SCENE: Epic 11th century graphic novel art style, <inject matching character visual from Bible here>, dramatic lighting]
+                       [SFX: SWORD or HORSE or THUNDER or CROWD or NONE]
+                       [NARRATION: <The Burmese spoken script for this block>]
+                    
+                    Example format:
+                    [SCENE: King Anawrahta holding shining spear, epic Bagan background]
+                    [SFX: SWORD]
+                    [NARRATION: အနော်ရထာမင်းကြီးသည် အရိန္ဒမာလှံကို ကိုင်ဆောင်လျက်...]
+                    
+                    Do not add any other text outside these blocks!"""
+                    
+                    res = client.models.generate_content(model="gemini-2.5-flash", contents=script_prompt)
+                    raw_script = res.text.strip()
+                    active_gemini_key = key  # အလုပ်လုပ်သွားသော Key ကို မှတ်ထားမည် (TTS အတွက်)
+                    break  # အောင်မြင်ပါက loop မှ ထွက်မည်
+                except Exception as e:
+                    last_error = e
+                    continue  # Error တက်ပါက နောက် Key သို့ ကူးမည်
+                    
+            if not raw_script:
+                st.error(f"Script Error: All API keys failed. Last error: {last_error}")
+                st.stop()
                 
-                script_prompt = f"""Write Episode {ep_number} of the series based on this plot: "{ep_focus}".
-                GLOBAL STYLE: {global_style}
-                CHARACTER BIBLE: {char_bible}
-                
-                STRICT INSTRUCTIONS:
-                1. Write in engaging spoken Burmese. Start with a 3-second viral hook.
-                2. You MUST break the story into sequential blocks (scenes).
-                3. For EVERY block, you MUST provide 3 tags exactly in this order:
-                   [SCENE: Epic 11th century graphic novel art style, <inject matching character visual from Bible here>, dramatic lighting]
-                   [SFX: SWORD or HORSE or THUNDER or CROWD or NONE]
-                   [NARRATION: <The Burmese spoken script for this block>]
-                
-                Example format:
-                [SCENE: King Anawrahta holding shining spear, epic Bagan background]
-                [SFX: SWORD]
-                [NARRATION: အနော်ရထာမင်းကြီးသည် အရိန္ဒမာလှံကို ကိုင်ဆောင်လျက်...]
-                
-                Do not add any other text outside these blocks!"""
-                
-                res = client.models.generate_content(model="gemini-2.5-flash", contents=script_prompt)
-                raw_script = res.text.strip()
-            except Exception as e:
-                st.error(f"Script Error: {e}"); st.stop()
-                
-            # --- 2. PARSE BLOCKS (Regex ဖြင့် ပိုမိုတိကျစွာ) ---
+            # --- 2. PARSE BLOCKS ---
             pbar.progress(20, text="🔍 ဇာတ်ကွက်များကို စိစစ်နေပါသည်...")
             block_pattern = re.compile(
                 r'\[SCENE:\s*(.*?)\]\s*'
@@ -195,7 +223,6 @@ with tab2:
                         'narration': narration
                     })
             else:
-                # Fallback: မူလ line-by-line parser (safety)
                 current_block = {}
                 for line in raw_script.split('\n'):
                     line = line.strip()
@@ -216,7 +243,7 @@ with tab2:
                 st.error("AI ဇာတ်ညွှန်း Format လွဲချော်သွားပါသည်။ ပြန်လည် Generate လုပ်ပါ။")
                 st.stop()
 
-            # --- 3. PROCESS EACH BLOCK (Sync & Tempfile သုံးထားသည်) ---
+            # --- 3. PROCESS EACH BLOCK ---
             final_clips = []
             temp_files = []
             
@@ -227,28 +254,27 @@ with tab2:
                 scene_prompt = blk['scene']
                 sfx_tag = blk['sfx']
                 
-                # Temp file အမည်များ
                 a_out = f"temp_aud_{i}.wav"
                 i_out = f"temp_img_{i}.jpg"
                 v_out = f"temp_vid_{i}.mp4"
                 anim_out = f"temp_anim_{i}.mp4"
                 temp_files.extend([a_out, i_out, v_out, anim_out])
                 
-                # A. Generate Audio (async wrapper အသုံးပြု)
+                # A. Generate Audio (Auto-Fallback ဖြင့် အောင်မြင်သော Key ကို သုံးမည်)
                 try:
                     run_async(generate_tts(narration, voice_char, a_out,
                                            engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
-                                           gemini_key=api_key_input))
+                                           gemini_key=active_gemini_key))
                 except Exception as e:
                     st.error(f"TTS Error (Scene {i+1}): {e}")
                     st.stop()
                 
                 dur = get_wav_duration(a_out)
                 if dur < 1.0:
-                    dur = 3.0  # Fallback safety
+                    dur = 3.0  
                 
-                # B. Generate Image (⚠️ Retry Mechanism & Increased Timeout ဖြင့် အဆင့်မြှင့်ထားသည်)
-                seed = random.randint(1, 1000000) # Pollinations ကို Cache မလုပ်စေရန်
+                # B. Generate Image
+                seed = random.randint(1, 1000000) 
                 encoded_prompt = urllib.parse.quote(scene_prompt + ", masterpiece, epic 11th century graphic novel, highly detailed")
                 url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true&seed={seed}"
                 
@@ -257,13 +283,12 @@ with tab2:
                 
                 for attempt in range(max_retries):
                     try:
-                        # Timeout ကို စက္ကန့် ၆၀ သို့ တိုးထားပါသည်
                         resp = requests.get(url, timeout=60)
                         if resp.status_code == 200 and 'image' in resp.headers.get('Content-Type', ''):
                             with open(i_out, "wb") as f:
                                 f.write(resp.content)
                             image_success = True
-                            break  # အောင်မြင်ပါက Loop မှ ထွက်မည်
+                            break  
                         else:
                             st.warning(f"Scene {i+1} Image API Warning: Status {resp.status_code}. Retrying ({attempt+1}/{max_retries})...")
                             time.sleep(3)
@@ -278,12 +303,12 @@ with tab2:
                     st.error(f"Image generation failed for scene {i+1} after {max_retries} attempts. Server is likely overloaded.")
                     st.stop()
                     
-                # C. Animate Image (duration တူအောင်)
+                # C. Animate Image
                 if not animate_image_with_fallback(i_out, anim_out, dur):
                     st.error(f"Animation failed for scene {i+1}")
                     st.stop()
                 
-                # D. Add Subtitles (burn into video)
+                # D. Add Subtitles 
                 wrap_text = "\n".join(textwrap.wrap(narration, 25))
                 safe_text = wrap_text.replace(':', '\\:').replace("'", "'\\''")
                 font_path = os.path.abspath(font_choice).replace('\\', '/')
