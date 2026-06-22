@@ -10,38 +10,69 @@ import urllib.parse
 import requests
 import textwrap
 import wave
+import random  # ⚠️ ပျောက်နေသော random module ကို ထည့်ထားပါသည်
+import tempfile  # ⚠️ tempfile ဖြင့် အမှိုက်ဖိုင်များ စနစ်တကျ ဖျက်နိုင်ရန်
 import ffmpeg
 from google import genai
 from core_engines.audio_tts import generate_tts
 from utils.helpers import get_available_fonts, get_download_link, cleanup_temp_files, load_key
 from core_engines.video_render import FFMPEG_BINARY
 
+# ffmpeg-python ၏ default binary ကို သတ်မှတ်ထားသော path သို့ပြောင်းပါ
+ffmpeg.ffmpeg = FFMPEG_BINARY
 
-# --- CORE FUNCTIONS ---
+# --- ASYNCIO အတွက် Safe Wrapper (Streamlit event loop နှင့် conflict မဖြစ်စေရန်) ---
+def run_async(coro):
+    """သီးသန့် thread တွင် event loop အသစ်ဖြင့် async function ကို run ပါ"""
+    def _run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        future = executor.submit(_run)
+        return future.result()
+
+# --- CORE FUNCTIONS (ပြင်ဆင်ထားသည်) ---
 def get_wav_duration(file_path):
     try:
-        with wave.open(file_path, 'r') as wf: return wf.getnframes() / float(wf.getframerate())
-    except Exception: return 0.0
+        with wave.open(file_path, 'r') as wf:
+            return wf.getnframes() / float(wf.getframerate())
+    except Exception:
+        return 0.0
 
 def animate_image_with_fallback(img_path, out_path, duration, w=720, h=1280):
-    """Luma/Kling API မရပါက FFmpeg Zoompan ဖြင့် Auto Fallback လုပ်မည့်စနစ်"""
-    # မှတ်ချက်: ဤနေရာတွင် Luma API ကို လှမ်းခေါ်ရန် Code ထည့်နိုင်သည်။ (ယခုတော့ FFmpeg ဖြင့် အခမဲ့ သေချာပေါက်လုပ်မည်)
+    """FFmpeg Zoompan ဖြင့် Animation ဖန်တီးပါ (Luma/Kling မပါလျှင်)"""
+    fps = 25
+    total_frames = int(duration * fps)
+    if total_frames < 1:
+        total_frames = 1
+    
+    # Pan/Zoom ပုံစံ ၃ မျိုး (FFmpeg zoompan expression စစ်ဆေးပြီးသား)
+    pan_styles = [
+        # Center Zoom In
+        f"scale=-2:2000,zoompan=z='min(zoom+0.001,1.2)':d={total_frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h},fps={fps}",
+        # Slow Pan Right
+        f"scale=-2:2000,zoompan=z='1.15':d={total_frames}:x='if(lte(on,{total_frames}),on*2,0)':y='ih/2-(ih/zoom/2)':s={w}x{h},fps={fps}",
+        # Slow Pan Down
+        f"scale=-2:2000,zoompan=z='1.15':d={total_frames}:x='iw/2-(iw/zoom/2)':y='if(lte(on,{total_frames}),on*2,0)':s={w}x{h},fps={fps}"
+    ]
+    selected_style = random.choice(pan_styles)
+    
     try:
-        # Panning Effects အား Random ကစားခြင်းဖြင့် ရုပ်ရှင်ဆန်စေရန်
-        pan_styles = [
-            f"zoompan=z='min(zoom+0.001,1.15)':d={int(duration*25)}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={w}x{h},fps=25", # Center Zoom
-            f"zoompan=z='1.15':d={int(duration*25)}:x='if(eq(x,0),0,x+1)':y='ih/2-(ih/zoom/2)':s={w}x{h},fps=25", # Pan Right
-            f"zoompan=z='1.15':d={int(duration*25)}:x='iw/2-(iw/zoom/2)':y='if(eq(y,0),0,y+1)':s={w}x{h},fps=25"  # Pan Down
-        ]
-        selected_style = random.choice(pan_styles)
-        
-        subprocess.run([FFMPEG_BINARY, "-y", "-loop", "1", "-framerate", "25", "-i", img_path, "-t", str(duration), "-vf", f"scale=-2:2000,{selected_style}", "-c:v", "libx264", "-preset", "superfast", out_path], capture_output=True)
+        subprocess.run(
+            [FFMPEG_BINARY, "-y", "-loop", "1", "-framerate", str(fps),
+             "-i", img_path, "-t", str(duration),
+             "-vf", selected_style,
+             "-c:v", "libx264", "-preset", "superfast", out_path],
+            capture_output=True, check=True
+        )
         return True
-    except Exception as e:
-        st.error(f"Animation Fallback Error: {e}")
+    except subprocess.CalledProcessError as e:
+        st.error(f"Animation Fallback Error: {e.stderr.decode()}")
         return False
 
-# --- UI & LOGIC ---
+# --- UI & LOGIC (မပြောင်းလဲပါ) ---
 st.markdown('<div class="setting-panel"><h2>📚 Epic Series Storytelling Studio</h2>', unsafe_allow_html=True)
 st.markdown("PDF စာအုပ်ကို တစ်ခါတည်းမှတ်ဉာဏ်သွင်းပြီး၊ Consistency အပြည့်အဝဖြင့် ဇာတ်လမ်းတွဲများ ဆက်တိုက်ထုတ်လုပ်ပါ။")
 
@@ -50,7 +81,7 @@ available_fonts = get_available_fonts()
 
 tab1, tab2 = st.tabs(["⚙️ Step 1: Memory Setup (စာအုပ်ဖတ်ခိုင်းရန်)", "🎬 Step 2: Generate Episode (ဇာတ်လမ်းတွဲ ထုတ်ရန်)"])
 
-api_key_input = load_key("GEMINI_API_KEY") # Gemini Key ကို ယူပါမည်
+api_key_input = load_key("GEMINI_API_KEY")
 
 with tab1:
     st.info("💡 ပထမဆုံးအကြိမ် တစ်ခါသာ လုပ်ရန် လိုအပ်ပါသည်။ စာအုပ်ကို ဖတ်ပြီး ဇာတ်ကောင်ရုပ်ထွက်များကို အသေမှတ်သားပါမည်။")
@@ -63,10 +94,14 @@ with tab1:
         else:
             with st.spinner("⏳ စာအုပ်တစ်အုပ်လုံးကို ဖတ်ရှုပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်..."):
                 try:
-                    with open("temp_book.pdf", "wb") as f: f.write(uploaded_pdf.read())
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                        tmp.write(uploaded_pdf.read())
+                        tmp_path = tmp.name
+
                     client = genai.Client(api_key=api_key_input.split(",")[0])
-                    media_file = client.files.upload(file="temp_book.pdf")
-                    while "PROCESSING" in str(client.files.get(name=media_file.name).state): time.sleep(2)
+                    media_file = client.files.upload(file=tmp_path)
+                    while "PROCESSING" in str(client.files.get(name=media_file.name).state):
+                        time.sleep(2)
                     
                     setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each (focus on face, 11th century Burmese attire, weapons). 
                     Output EXACTLY as a valid JSON format:
@@ -80,11 +115,15 @@ with tab1:
                     }}"""
                     res = client.models.generate_content(model="gemini-2.5-flash", contents=[media_file, setup_prompt])
                     clean_json = res.text.replace('```json', '').replace('```', '').strip()
-                    with open(MEMORY_FILE, "w", encoding="utf-8") as jf: jf.write(clean_json)
+                    with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
+                        jf.write(clean_json)
                     client.files.delete(name=media_file.name)
+                    os.unlink(tmp_path)
                     st.success("✅ မှတ်ဉာဏ်တည်ဆောက်ခြင်း ပြီးစီးပါပြီ! Step 2 သို့ သွားပါ။")
                 except Exception as e:
                     st.error(f"Memory Setup Error: {e}")
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
 
 with tab2:
     if os.path.exists(MEMORY_FILE):
@@ -107,13 +146,12 @@ with tab2:
             run_id = str(int(time.time()))
             pbar = st.progress(0, text="🚀 ဇာတ်ညွှန်း ရေးသားနေပါသည်...")
             
-            # --- 1. SCRIPT GENERATION ---
+            # --- 1. SCRIPT GENERATION (မူလအတိုင်း) ---
             try:
                 client = genai.Client(api_key=api_key_input.split(",")[0])
                 char_bible = json.dumps(memory_data.get("characters", {}))
                 global_style = memory_data.get("global_narrative_style", "")
                 
-                # 🔴 PROMPT ENGINEERING: ဇာတ်ညွှန်းကို Block တွေအဖြစ် အတိအကျ ခွဲထုတ်ခိုင်းခြင်း
                 script_prompt = f"""Write Episode {ep_number} of the series based on this plot: "{ep_focus}".
                 GLOBAL STYLE: {global_style}
                 CHARACTER BIBLE: {char_bible}
@@ -138,29 +176,52 @@ with tab2:
             except Exception as e:
                 st.error(f"Script Error: {e}"); st.stop()
                 
-            # --- 2. PARSE BLOCKS ---
+            # --- 2. PARSE BLOCKS (Regex ဖြင့် ပိုမိုတိကျစွာ) ---
             pbar.progress(20, text="🔍 ဇာတ်ကွက်များကို စိစစ်နေပါသည်...")
+            # SCENE, SFX, NARRATION tag များကို စိတ်ချရသော regex ဖြင့် ဖမ်းယူပါ
+            block_pattern = re.compile(
+                r'\[SCENE:\s*(.*?)\]\s*'
+                r'\[SFX:\s*(.*?)\]\s*'
+                r'\[NARRATION:\s*(.*?)\](?=\s*\[SCENE:|\s*$)',
+                re.DOTALL
+            )
+            matches = block_pattern.findall(raw_script)
             blocks = []
-            current_block = {}
-            for line in raw_script.split('\n'):
-                line = line.strip()
-                if line.startswith('[SCENE:'):
-                    if current_block: blocks.append(current_block)
-                    current_block = {'scene': line.replace('[SCENE:', '').replace(']', '').strip(), 'sfx': 'NONE', 'narration': ''}
-                elif line.startswith('[SFX:') and current_block:
-                    current_block['sfx'] = line.replace('[SFX:', '').replace(']', '').strip()
-                elif line.startswith('[NARRATION:') and current_block:
-                    current_block['narration'] = line.replace('[NARRATION:', '').replace(']', '').strip()
-                elif line and current_block and not line.startswith('['):
-                    current_block['narration'] += " " + line
-            if current_block: blocks.append(current_block)
+            if matches:
+                for scene, sfx, narration in matches:
+                    narration = re.sub(r'\s+', ' ', narration).strip()
+                    blocks.append({
+                        'scene': scene.strip(),
+                        'sfx': sfx.strip(),
+                        'narration': narration
+                    })
+            else:
+                # Fallback: မူလ line-by-line parser (safety)
+                current_block = {}
+                for line in raw_script.split('\n'):
+                    line = line.strip()
+                    if line.startswith('[SCENE:'):
+                        if current_block:
+                            blocks.append(current_block)
+                        current_block = {'scene': line.replace('[SCENE:', '').replace(']', '').strip(), 'sfx': 'NONE', 'narration': ''}
+                    elif line.startswith('[SFX:') and current_block:
+                        current_block['sfx'] = line.replace('[SFX:', '').replace(']', '').strip()
+                    elif line.startswith('[NARRATION:') and current_block:
+                        current_block['narration'] = line.replace('[NARRATION:', '').replace(']', '').strip()
+                    elif line and current_block and not line.startswith('['):
+                        current_block['narration'] += " " + line
+                if current_block:
+                    blocks.append(current_block)
             
             if not blocks:
                 st.error("AI ဇာတ်ညွှန်း Format လွဲချော်သွားပါသည်။ ပြန်လည် Generate လုပ်ပါ။")
                 st.stop()
 
-            # --- 3. PROCESS EACH BLOCK (PERFECT SYNC ENGINE) ---
+            # --- 3. PROCESS EACH BLOCK (Sync & Tempfile သုံးထားသည်) ---
             final_clips = []
+            # ဖန်တီးမည့် temp ဖိုင်များကို ခြေရာခံပြီး နောက်ဆုံးတွင် ဖျက်ပါမည်
+            temp_files = []
+            
             for i, blk in enumerate(blocks):
                 pbar.progress(30 + int((i/len(blocks))*50), text=f"🎬 Scene {i+1}/{len(blocks)} အား ဖန်တီးနေပါသည်...")
                 
@@ -168,34 +229,62 @@ with tab2:
                 scene_prompt = blk['scene']
                 sfx_tag = blk['sfx']
                 
+                # Temp file အမည်များ
                 a_out = f"temp_aud_{i}.wav"
                 i_out = f"temp_img_{i}.jpg"
                 v_out = f"temp_vid_{i}.mp4"
+                anim_out = f"temp_anim_{i}.mp4"
+                temp_files.extend([a_out, i_out, v_out, anim_out])
                 
-                # A. Generate Audio
-                asyncio.run(generate_tts(narration, voice_char, a_out, engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS", gemini_key=api_key_input))
+                # A. Generate Audio (async wrapper အသုံးပြု)
+                try:
+                    run_async(generate_tts(narration, voice_char, a_out,
+                                           engine="Google Synergy TTS (Flash 3.1 Preview)" if "Synergy" in voice_char else "Edge-TTS",
+                                           gemini_key=api_key_input))
+                except Exception as e:
+                    st.error(f"TTS Error (Scene {i+1}): {e}")
+                    st.stop()
+                
                 dur = get_wav_duration(a_out)
-                if dur < 1.0: dur = 3.0 # Fallback safety
+                if dur < 1.0:
+                    dur = 3.0  # Fallback safety
                 
-                # B. Generate Image
+                # B. Generate Image (error handling + status check)
                 encoded_prompt = urllib.parse.quote(scene_prompt + ", masterpiece, epic 11th century graphic novel, highly detailed")
                 url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=720&height=1280&nologo=true"
                 try:
-                    res = requests.get(url, timeout=30)
-                    with open(i_out, "wb") as f: f.write(res.content)
-                except Exception:
-                    st.error(f"Image generation failed for scene {i}"); st.stop()
+                    resp = requests.get(url, timeout=30)
+                    if resp.status_code != 200 or 'image' not in resp.headers.get('Content-Type', ''):
+                        raise Exception(f"Image API returned invalid response (status {resp.status_code})")
+                    with open(i_out, "wb") as f:
+                        f.write(resp.content)
+                except Exception as e:
+                    st.error(f"Image generation failed for scene {i+1}: {e}")
+                    st.stop()
                     
-                # C. Animate Image (Length = Audio Duration exactly)
-                animate_image_with_fallback(i_out, "temp_anim.mp4", dur)
+                # C. Animate Image (duration တူအောင်)
+                if not animate_image_with_fallback(i_out, anim_out, dur):
+                    st.error(f"Animation failed for scene {i+1}")
+                    st.stop()
                 
-                # D. Add Subtitles (Burn into this specific clip)
+                # D. Add Subtitles (burn into video)
+                # textfile အစား literal string ကို သုံး၍ encoding ပြဿနာမရှိအောင်
                 wrap_text = "\n".join(textwrap.wrap(narration, 25))
-                with open("temp_sub.txt", "w", encoding="utf-8") as tf: tf.write(wrap_text)
-                safe_font = os.path.abspath(font_choice).replace('\\', '/').replace(':', '\\:')
+                # ffmpeg filter တွင် အသုံးပြုမည့် escaped string
+                safe_text = wrap_text.replace(':', '\\:').replace("'", "'\\''")
+                font_path = os.path.abspath(font_choice).replace('\\', '/')
                 
-                vid_stream = ffmpeg.input("temp_anim.mp4").video
-                vid_stream = ffmpeg.filter(vid_stream, 'drawtext', textfile='temp_sub.txt', fontfile=safe_font, fontcolor='yellow', fontsize=32, bordercolor='black', borderw=3, x='(w-text_w)/2', y='h-text_h-150', text_align='C')
+                vid_stream = ffmpeg.input(anim_out).video
+                vid_stream = ffmpeg.filter(vid_stream, 'drawtext',
+                                           text=safe_text,
+                                           fontfile=font_path,
+                                           fontcolor='yellow',
+                                           fontsize=32,
+                                           bordercolor='black',
+                                           borderw=3,
+                                           x='(w-text_w)/2',
+                                           y='h-text_h-150',
+                                           text_align='C')
                 
                 # E. Mix Audio & SFX
                 aud_stream = ffmpeg.input(a_out).audio
@@ -204,22 +293,46 @@ with tab2:
                     sfx_stream = ffmpeg.input(sfx_path).audio.filter('volume', 0.8)
                     aud_stream = ffmpeg.filter([aud_stream, sfx_stream], 'amix', inputs=2, duration='first')
                 
-                # Render the final block clip
-                ffmpeg.output(vid_stream, aud_stream, v_out, vcodec='libx264', acodec='aac', t=dur).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                # Render clip
+                try:
+                    ffmpeg.output(vid_stream, aud_stream, v_out,
+                                  vcodec='libx264', acodec='aac', t=dur
+                                  ).overwrite_output().run(cmd=FFMPEG_BINARY, quiet=True)
+                except ffmpeg.Error as e:
+                    st.error(f"FFmpeg render error for scene {i+1}: {e.stderr.decode()}")
+                    st.stop()
+                    
                 final_clips.append(v_out)
                 
             # --- 4. MASTER CONCATENATION ---
             pbar.progress(90, text="🎞️ ဗီဒီယိုအားလုံးကို ဆက်စပ်နေပါသည်...")
-            with open("concat_list.txt", "w") as f:
-                for c in final_clips: f.write(f"file '{c}'\n")
+            concat_file = f"concat_list_{run_id}.txt"
+            with open(concat_file, "w") as f:
+                for c in final_clips:
+                    f.write(f"file '{os.path.abspath(c)}'\n")
+            temp_files.append(concat_file)
             
             out_final = f"EPISODE_{ep_number}_{run_id}.mp4"
-            subprocess.run([FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0", "-i", "concat_list.txt", "-c", "copy", out_final], capture_output=True)
+            try:
+                subprocess.run([FFMPEG_BINARY, "-y", "-f", "concat", "-safe", "0",
+                                "-i", concat_file, "-c", "copy", out_final],
+                               capture_output=True, check=True)
+            except subprocess.CalledProcessError as e:
+                st.error(f"Final concatenation failed: {e.stderr.decode()}")
+                st.stop()
             
             st.session_state.final_video_path = out_final
             st.session_state.render_success = True
             pbar.progress(100, text="✅ အားလုံးအောင်မြင်စွာ ပြီးစီးပါပြီ!")
             
+            # --- Temp files များအားလုံးကို သန့်ရှင်းပါ ---
+            for tf in temp_files:
+                if os.path.exists(tf):
+                    try:
+                        os.remove(tf)
+                    except Exception:
+                        pass
+                        
         # Dashboard Display
         if st.session_state.get("render_success"):
             st.balloons()
