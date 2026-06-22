@@ -51,7 +51,7 @@ def gemini_generate_with_single_key(api_key, model, contents, max_retries=3):
     raise Exception(f"API Key {api_key[:10]}... ဖြင့် မအောင်မြင်ပါ")
 
 def gemini_generate_with_keys(api_keys, model, contents, max_retries_per_key=2):
-    """Comma ခြားထားသော API Keys များကို အစဉ်တိုင်းစမ်းပါ။ Step 2 တွင်သုံးရန်။"""
+    """Keys များကို အလှည့်ကျ သုံးမည် (Step 2 အတွက်)"""
     for key in api_keys:
         try:
             client = genai.Client(api_key=key.strip())
@@ -72,9 +72,58 @@ def gemini_generate_with_keys(api_keys, model, contents, max_retries_per_key=2):
         except Exception as e:
             st.warning(f"Key {key[:10]}... error: {e}")
             continue
-    raise Exception("Gemini API ခေါ်ဆို၍မရပါ – သော့အားလုံး ပျက်ကုန်ပါပြီ။")
+    raise Exception("သော့အားလုံး ပျက်ကုန်ပါပြီ။")
 
-# --- CORE FUNCTIONS ---
+def step1_memory_setup(pdf_bytes, api_keys, series_name):
+    """
+    Step 1 အတွက် Key rotation ပါဝင်သော Memory Setup လုပ်ငန်းစဉ်။
+    Key တစ်ခုချင်းစီအတွက် file upload + generate ကို လုပ်ဆောင်ပါမည်။
+    """
+    last_error = None
+    for key in api_keys:
+        tmp_path = None
+        try:
+            # temp file ဖန်တီးပါ
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(pdf_bytes)
+                tmp_path = tmp.name
+
+            client = genai.Client(api_key=key.strip())
+            # File upload
+            media_file = client.files.upload(file=tmp_path)
+            while "PROCESSING" in str(client.files.get(name=media_file.name).state):
+                time.sleep(2)
+
+            # Generate content
+            setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each.
+Each visual prompt MUST describe the character's **full body pose, traditional 11th century Bagan attire, weapons, and the typical background environment (Bagan temples, palace, battlefield, etc.)**.
+This will be used to generate consistent character images in wide cinematic shots.
+Output EXACTLY as a valid JSON format:
+{{
+    "series_title": "{series_name}",
+    "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic. Do NOT change narrator perspective.",
+    "characters": {{
+        "Character1_Name": "Visual description with wide background...",
+        "Character2_Name": "Visual description with wide background..."
+    }}
+}}"""
+            res = gemini_generate_with_single_key(key, "gemini-2.5-flash", [media_file, setup_prompt])
+            clean_json = res.text.replace('```json', '').replace('```', '').strip()
+            memory_data = json5.loads(clean_json)
+            # အောင်မြင်ပါက file delete လုပ်ပြီး ပြန်ပေးမည်
+            client.files.delete(name=media_file.name)
+            return memory_data
+        except Exception as e:
+            last_error = e
+            # cleanup
+            if tmp_path and os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            st.warning(f"Key {key[:10]}... ဖြင့် မအောင်မြင်ပါ။ နောက် key ဖြင့် ထပ်ကြိုးစားပါမည်...")
+            continue
+    # အားလုံးမအောင်မြင်ပါက
+    raise Exception(f"Memory Setup အားလုံးမအောင်မြင်ပါ။ နောက်ဆုံးအမှား: {last_error}")
+
+# --- CORE FUNCTIONS (မူရင်းအတိုင်း) ---
 def get_wav_duration(file_path):
     try:
         with wave.open(file_path, 'r') as wf:
@@ -165,45 +214,15 @@ with tab1:
         if not gemini_keys or not uploaded_pdf or not series_name:
             st.error("API Key နှင့် PDF ကို ထည့်ပေးပါ။")
         else:
-            with st.spinner("⏳ စာအုပ်တစ်အုပ်လုံးကို ဖတ်ရှုပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်..."):
-                tmp_path = None
+            with st.spinner("⏳ စာအုပ်တစ်အုပ်လုံးကို ဖတ်ရှုပြီး ဇာတ်ကောင်များကို မှတ်သားနေပါသည်... (Key တစ်ခုမရပါက နောက် Key ဖြင့် ဆက်ကြိုးစားပါမည်)"):
                 try:
-                    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                        tmp.write(uploaded_pdf.read())
-                        tmp_path = tmp.name
-
-                    # Key တစ်ခုတည်းကို upload + generation နှစ်ခုလုံးအတွက်သုံးပါ (Permission Error ရှောင်ရန်)
-                    primary_key = gemini_keys[0]
-                    client = genai.Client(api_key=primary_key.strip())
-                    media_file = client.files.upload(file=tmp_path)
-                    while "PROCESSING" in str(client.files.get(name=media_file.name).state):
-                        time.sleep(2)
-
-                    setup_prompt = f"""Read this book. Extract the main characters and create a short, extremely detailed English visual prompt for each.
-Each visual prompt MUST describe the character's **full body pose, traditional 11th century Bagan attire, weapons, and the typical background environment (Bagan temples, palace, battlefield, etc.)**.
-This will be used to generate consistent character images in wide cinematic shots.
-Output EXACTLY as a valid JSON format:
-{{
-    "series_title": "{series_name}",
-    "global_narrative_style": "Third-Person Omniscient Cinematic Tone. Tell the story like a legendary historical epic. Do NOT change narrator perspective.",
-    "characters": {{
-        "Character1_Name": "Visual description with wide background...",
-        "Character2_Name": "Visual description with wide background..."
-    }}
-}}"""
-                    # တူညီသော client ဖြင့်သာ generate ခေါ်ပါ
-                    res = gemini_generate_with_single_key(primary_key, "gemini-2.5-flash", [media_file, setup_prompt])
-                    clean_json = res.text.replace('```json', '').replace('```', '').strip()
-                    memory_data = json5.loads(clean_json)
+                    # Key rotation ဖြင့် memory setup လုပ်ပါ
+                    memory_data = step1_memory_setup(uploaded_pdf.read(), gemini_keys, series_name)
                     with open(MEMORY_FILE, "w", encoding="utf-8") as jf:
                         json.dump(memory_data, jf, ensure_ascii=False, indent=2)
-                    client.files.delete(name=media_file.name)
                     st.success("✅ မှတ်ဉာဏ်တည်ဆောက်ခြင်း ပြီးစီးပါပြီ! Step 2 သို့ သွားပါ။")
                 except Exception as e:
                     st.error(f"Memory Setup Error: {e}")
-                finally:
-                    if tmp_path and os.path.exists(tmp_path):
-                        os.unlink(tmp_path)
 
 with tab2:
     if os.path.exists(MEMORY_FILE):
