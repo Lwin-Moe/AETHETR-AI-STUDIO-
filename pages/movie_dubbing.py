@@ -271,7 +271,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 if script_tone:
                     extra_rules += " [TONE]: Inject strong emotions."
 
-                # AI ကို အချိန်အတိအကျ ရေးရန်နှင့် Hormozi style အတိုင်းတိုတိုဖြတ်ရန် ကန့်သတ်ခြင်း
                 hormozi_rule = " [HORMOZI]: Split the subtitles into chunks of ONLY 1 to 4 words max per block. CRITICAL: DO NOT remove original timestamps." if sub_short else ""
                 
                 extra_rules += f"\n[CRITICAL TIME LIMIT]: The video is exactly {v_dur:.1f} seconds long. Your Burmese script MUST be concise enough to be read aloud in EXACTLY {v_dur:.1f} seconds. Do NOT write a long essay."
@@ -282,41 +281,53 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 raw_output_text = ""
                 keys_list = [k.strip() for k in api_key_input.split(",") if k.strip()]
 
+                # 🔴 503/429 Auto-Retry System (Gemini)
                 if "Gemini" in ai_provider:
                     success_gemini = False
                     last_err = ""
                     for idx, current_key in enumerate(keys_list, 1):
-                        st.toast(f"🔄 Script: Key {idx} ဖြင့် စမ်းသပ်နေပါသည်...")
-                        try:
-                            client = genai.Client(api_key=current_key)
-                            target_file = v_input if "Original" in recap_mode else a_extracted
-                            media_file = client.files.upload(file=target_file)
-                            while "PROCESSING" in str(client.files.get(name=media_file.name).state):
-                                time.sleep(2)
-                            gemini_prompt = (
-                                "Watch the video carefully. Invent an ORIGINAL, highly engaging storytelling recap in Burmese. "
-                                "Do NOT just translate. STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output ONLY valid SRT format perfectly synced to the scenes. "
-                                f"{extra_rules}"
-                            ) if "Original" in recap_mode else (
-                                "Listen to the audio. Translate and adapt the text into highly engaging spoken Burmese. "
-                                "STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output ONLY valid SRT format keeping the ORIGINAL timestamps exactly. "
-                                f"{extra_rules}"
-                            )
-                            res = client.models.generate_content(
-                                model="gemini-2.5-flash",
-                                contents=[media_file, gemini_prompt]
-                            )
-                            raw_output_text = res.text.strip()
-                            client.files.delete(name=media_file.name)
-                            success_gemini = True
-                            st.toast(f"✅ Script: Key {idx} အောင်မြင်ပါသည်။")
+                        for attempt in range(3):
+                            st.toast(f"🔄 Script: Key {idx} (Attempt {attempt+1}) ဖြင့် စမ်းသပ်နေပါသည်...")
+                            try:
+                                client = genai.Client(api_key=current_key)
+                                target_file = v_input if "Original" in recap_mode else a_extracted
+                                media_file = client.files.upload(file=target_file)
+                                while "PROCESSING" in str(client.files.get(name=media_file.name).state):
+                                    time.sleep(2)
+                                gemini_prompt = (
+                                    "Watch the video carefully. Invent an ORIGINAL, highly engaging storytelling recap in Burmese. "
+                                    "Do NOT just translate. STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output ONLY valid SRT format perfectly synced to the scenes. "
+                                    f"{extra_rules}"
+                                ) if "Original" in recap_mode else (
+                                    "Listen to the audio. Translate and adapt the text into highly engaging spoken Burmese. "
+                                    "STRICT RULES: 1. NO ENGLISH TRANSLITERATION. 2. Output ONLY valid SRT format keeping the ORIGINAL timestamps exactly. "
+                                    f"{extra_rules}"
+                                )
+                                res = client.models.generate_content(
+                                    model="gemini-2.5-flash",
+                                    contents=[media_file, gemini_prompt]
+                                )
+                                raw_output_text = res.text.strip()
+                                client.files.delete(name=media_file.name)
+                                success_gemini = True
+                                st.toast(f"✅ Script: Key {idx} အောင်မြင်ပါသည်။")
+                                break
+                            except Exception as e:
+                                last_err = str(e)
+                                if "503" in last_err or "429" in last_err:
+                                    wait_time = 5 * (attempt + 1)
+                                    st.toast(f"⚠️ Server ကြပ်နေပါသည်။ စက္ကန့် {wait_time} စောင့်ဆိုင်းပြီး ပြန်လည်ကြိုးစားပါမည်...")
+                                    try: client.files.delete(name=media_file.name)
+                                    except Exception: pass
+                                    time.sleep(wait_time)
+                                    continue
+                                else:
+                                    st.toast(f"⚠️ Script: Key {idx} Error တက်သွားပါပြီ။")
+                                    try: client.files.delete(name=media_file.name)
+                                    except Exception: pass
+                                    break
+                        if success_gemini:
                             break
-                        except Exception as e:
-                            last_err = str(e)
-                            st.toast(f"⚠️ Script: Key {idx} Limit ကုန်/Error တက်သွားပါပြီ။")
-                            try: client.files.delete(name=media_file.name)
-                            except Exception: pass
-                            continue
                     if not success_gemini:
                         raise Exception(f"Gemini Error: {last_err}")
                 else:
@@ -366,11 +377,9 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
                 clean_srt_text = re.sub(r'\[TITLE:.*?\]', '', raw_output_text, flags=re.IGNORECASE)
                 clean_srt_text = re.sub(r'\[TAGS:.*?\]', '', clean_srt_text, flags=re.IGNORECASE).strip()
                 
-                # Strip out markdown formatting if any
                 marker = chr(96) * 3
                 clean_srt_text = clean_srt_text.replace(f"{marker}srt", "").replace(marker, "")
 
-                # 🔴 FIX: Using inline parameter-safe parse function
                 parsed_timestamps, speech_text = parse_and_save_real_srt(clean_srt_text, "subtitles.srt", use_fade=False)
 
                 st.session_state.md_generated_script = speech_text
@@ -383,7 +392,6 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
         with st.spinner("⏳ [၃/၃] AI Voice Over ထုတ်လုပ်နေပါသည်..."):
             pbar.progress(70, text="🎙️ အသံသရုပ်ဆောင်ဖန်တီးနေပါသည်...")
 
-            # 🔴 ENGLISH TAGS BUG FIX: အင်္ဂလိပ်စာလုံးများကို အကြွင်းမဲ့ ဖယ်ရှားပစ်ပါသည်
             clean_speech = st.session_state.md_generated_script
             clean_speech = re.sub(r'\[.*?\]', '', clean_speech)
             clean_speech = re.sub(r'\{.*?\}', '', clean_speech)
@@ -395,74 +403,84 @@ def render_movie_dubbing_studio(api_key_input, saved_gemini, ai_provider, groq_k
             success_tts = False
             last_tts_err = ""
 
+            # 🔴 503/429 Auto-Retry System (TTS Engine)
             for idx, current_key in enumerate(tts_keys, 1):
-                try:
-                    st.toast(f"🎙️ TTS: Key {idx} ဖြင့် အသံထုတ်လုပ်နေပါသည်...")
-                    if os.path.exists(a_generated): os.remove(a_generated)
+                for attempt in range(3):
+                    try:
+                        st.toast(f"🎙️ TTS: Key {idx} (Attempt {attempt+1}) ဖြင့် အသံထုတ်လုပ်နေပါသည်...")
+                        if os.path.exists(a_generated): os.remove(a_generated)
 
-                    if inspect.iscoroutinefunction(generate_tts):
-                        asyncio.run(generate_tts(
-                            clean_speech,
-                            voice_char,
-                            a_generated,
-                            engine=audio_engine_choice,
-                            ttsmaker_key=key_ttsmaker,
-                            eleven_key=eleven_key_input,
-                            custom_eleven_id=custom_eleven_id,
-                            gemini_key=current_key,
-                            pitch=pitch_level,
-                            voice_fx=fx_level
-                        ))
-                    else:
-                        generate_tts(
-                            clean_speech,
-                            voice_char,
-                            a_generated,
-                            engine=audio_engine_choice,
-                            ttsmaker_key=key_ttsmaker,
-                            eleven_key=eleven_key_input,
-                            custom_eleven_id=custom_eleven_id,
-                            gemini_key=current_key,
-                            pitch=pitch_level,
-                            voice_fx=fx_level
-                        )
+                        if inspect.iscoroutinefunction(generate_tts):
+                            asyncio.run(generate_tts(
+                                clean_speech,
+                                voice_char,
+                                a_generated,
+                                engine=audio_engine_choice,
+                                ttsmaker_key=key_ttsmaker,
+                                eleven_key=eleven_key_input,
+                                custom_eleven_id=custom_eleven_id,
+                                gemini_key=current_key,
+                                pitch=pitch_level,
+                                voice_fx=fx_level
+                            ))
+                        else:
+                            generate_tts(
+                                clean_speech,
+                                voice_char,
+                                a_generated,
+                                engine=audio_engine_choice,
+                                ttsmaker_key=key_ttsmaker,
+                                eleven_key=eleven_key_input,
+                                custom_eleven_id=custom_eleven_id,
+                                gemini_key=current_key,
+                                pitch=pitch_level,
+                                voice_fx=fx_level
+                            )
 
-                    if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
-                        a_dur_raw = get_wav_duration(a_generated)
+                        if os.path.exists(a_generated) and os.path.getsize(a_generated) > 100:
+                            a_dur_raw = get_wav_duration(a_generated)
 
-                        a_final_target = a_generated
-                        if a_dur_raw > 0 and v_dur > 0:
-                            ratio = a_dur_raw / v_dur
-                            filt = get_atempo_filter(ratio)
-                            if filt:
-                                synced_audio = "md_audio_synced.wav"
-                                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-filter:a", filt, synced_audio], capture_output=True)
-                                if os.path.exists(synced_audio) and os.path.getsize(synced_audio) > 100:
-                                    a_final_target = synced_audio
+                            a_final_target = a_generated
+                            if a_dur_raw > 0 and v_dur > 0:
+                                ratio = a_dur_raw / v_dur
+                                filt = get_atempo_filter(ratio)
+                                if filt:
+                                    synced_audio = "md_audio_synced.wav"
+                                    subprocess.run([FFMPEG_BINARY, "-y", "-i", a_generated, "-filter:a", filt, synced_audio], capture_output=True)
+                                    if os.path.exists(synced_audio) and os.path.getsize(synced_audio) > 100:
+                                        a_final_target = synced_audio
+                                    else:
+                                        a_final_target = a_generated  
                                 else:
                                     a_final_target = a_generated  
-                            else:
-                                a_final_target = a_generated  
 
-                            # 🔴 EXACT PADDING FIX
-                            exact_audio = "md_audio_exact.wav"
-                            pad_filter = f"apad=whole_dur={v_dur}"
-                            subprocess.run([FFMPEG_BINARY, "-y", "-i", a_final_target, "-af", pad_filter, "-t", str(v_dur), exact_audio], capture_output=True)
-                            if os.path.exists(exact_audio) and os.path.getsize(exact_audio) > 100:
-                                a_final_target = exact_audio
+                                exact_audio = "md_audio_exact.wav"
+                                pad_filter = f"apad=whole_dur={v_dur}"
+                                subprocess.run([FFMPEG_BINARY, "-y", "-i", a_final_target, "-af", pad_filter, "-t", str(v_dur), exact_audio], capture_output=True)
+                                if os.path.exists(exact_audio) and os.path.getsize(exact_audio) > 100:
+                                    a_final_target = exact_audio
 
-                        st.session_state.md_final_audio_path = a_final_target
-                        st.session_state.md_audio_dur = get_wav_duration(a_final_target)
-                        success_tts = True
-                        st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။")
-                        break
-                    else:
-                        last_tts_err = "Generated audio file is missing or empty."
-                        st.toast(f"⚠️ TTS: Key {idx} မှ အသံမထွက်ပါ။")
-                except Exception as e:
-                    last_tts_err = str(e)
-                    st.toast(f"⚠️ TTS: Key {idx} Error တက်သွားပါပြီ။")
-                    continue
+                            st.session_state.md_final_audio_path = a_final_target
+                            st.session_state.md_audio_dur = get_wav_duration(a_final_target)
+                            success_tts = True
+                            st.toast(f"✅ TTS: Key {idx} အောင်မြင်ပါသည်။")
+                            break
+                        else:
+                            last_tts_err = "Generated audio file is missing or empty."
+                            st.toast(f"⚠️ TTS: Key {idx} မှ အသံမထွက်ပါ။")
+                            break
+                    except Exception as e:
+                        last_tts_err = str(e)
+                        if "429" in last_tts_err or "503" in last_tts_err:
+                            wait_time = 5 * (attempt + 1)
+                            st.toast(f"⚠️ TTS API Limit. စက္ကန့် {wait_time} စောင့်ပြီး ပြန်လည်ကြိုးစားပါမည်...")
+                            time.sleep(wait_time)
+                            continue
+                        else:
+                            st.toast(f"⚠️ TTS: Key {idx} Error တက်သွားပါပြီ။")
+                            break
+                if success_tts:
+                    break
 
             if not success_tts:
                 st.error(f"❌ TTS Error on ALL keys: {last_tts_err}. Please check your quota.")
