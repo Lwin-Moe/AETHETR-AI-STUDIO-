@@ -86,7 +86,6 @@ with tab1:
     st.info("💡 ဇာတ်ကောင်များကို PDF ဖတ်ခိုင်း၍ဖြစ်စေ၊ ကိုယ်တိုင် ရိုက်ထည့်၍ဖြစ်စေ မှတ်ဉာဏ်တည်ဆောက်နိုင်ပါသည်။")
     series_name = st.text_input("ဇာတ်လမ်းတွဲ အမည်:", placeholder="ဥပမာ - အိုဘယ့် အနော်ရထာ")
     
-    # 🔴 STEP 1 OPTION: PDF vs Manual
     setup_mode = st.radio("မှတ်ဉာဏ်တည်ဆောက်မည့် နည်းလမ်း ရွေးချယ်ပါ:", ["📄 PDF စာအုပ်မှ အလိုအလျောက် မှတ်သားမည်", "✍️ Manual (ဇာတ်ကောင်များကို ကိုယ်တိုင်ရေးထည့်မည်)"], horizontal=True)
     
     if setup_mode == "📄 PDF စာအုပ်မှ အလိုအလျောက် မှတ်သားမည်":
@@ -166,7 +165,6 @@ with tab1:
                             os.unlink(tmp_path)
                             
     else:
-        # 🔴 MANUAL CHARACTER INPUT
         manual_chars = st.text_area("ဇာတ်ကောင် ရုပ်ထွက်ဖော်ပြချက်များ (Character Bible):", height=200, placeholder="ဥပမာ -\nအနော်ရထာ - 11th-century ancient Myanmar King, fierce, wearing traditional golden paso and eingyi...\nကျန်စစ်သား - strong ancient Burmese warrior, traditional Myanmar armor, spear...")
         if st.button("💾 မှတ်ဉာဏ်အဖြစ် သိမ်းဆည်းပါ"):
             if not series_name or not manual_chars.strip():
@@ -215,7 +213,6 @@ with tab2:
             font_choice = st.selectbox("Subtitle Font", available_fonts)
             
         st.markdown("---")
-        # 🔴 STEP 2 OPTION: AI Script vs Manual Script
         script_input_mode = st.radio("ဇာတ်ညွှန်း ဖန်တီးမည့် နည်းလမ်း:", ["🤖 AI ဖြင့် အလိုအလျောက် ရေးဆွဲမည်", "✍️ Manual (ကိုယ်တိုင်) ဇာတ်ညွှန်းထည့်မည်"], horizontal=True)
 
         if script_input_mode == "🤖 AI ဖြင့် အလိုအလျောက် ရေးဆွဲမည်":
@@ -290,7 +287,6 @@ with tab2:
         st.markdown("### ✍️ ဇာတ်ညွှန်း စစ်ဆေးခြင်း / Manual ထည့်သွင်းခြင်း (Script Review)")
         st.caption("မှတ်ချက် - ကိုယ်တိုင်ရေးမည်ဆိုပါက `[SCENE]`, `[SFX]`, `[NARRATION]` tag များကို အတိအကျ ထည့်သွင်းပါ။")
         
-        # 🔴 Shared Text Area for both AI Draft and Manual Input
         edited_script = st.text_area("Final Script Code", value=st.session_state.script_draft if script_input_mode == "🤖 AI ဖြင့် အလိုအလျောက် ရေးဆွဲမည်" else "", height=400)
         
         if st.button("🎬 အဆင့် (၂) - ဇာတ်ညွှန်းအတိုင်း ဗီဒီယို ဖန်တီးရန် (RENDER NOW)"):
@@ -444,14 +440,23 @@ with tab2:
                                            y='h-text_h-150',
                                            text_align='C')
                 
+                # 🔴 SFX MIXING UPDATE (CASE-INSENSITIVE)
                 aud_stream = ffmpeg.input(a_out).audio
                 if sfx_tag != "NONE":
-                    sfx_path = f"sfx/{sfx_tag.lower()}.mp3"
-                    if os.path.exists(sfx_path):
-                        sfx_stream = ffmpeg.input(sfx_path).audio.filter('volume', 0.8)
+                    sfx_tag_clean = sfx_tag.strip().lower()
+                    actual_sfx_path = None
+                    
+                    if os.path.exists("sfx"):
+                        for f in os.listdir("sfx"):
+                            if f.lower() == f"{sfx_tag_clean}.mp3":
+                                actual_sfx_path = os.path.join("sfx", f)
+                                break
+                                
+                    if actual_sfx_path and os.path.exists(actual_sfx_path):
+                        sfx_stream = ffmpeg.input(actual_sfx_path).audio.filter('volume', 0.8)
                         aud_stream = ffmpeg.filter([aud_stream, sfx_stream], 'amix', inputs=2, duration='first')
                     else:
-                        st.toast(f"⚠️ Sound Effect ဖိုင် မရှိပါ: {sfx_path} ကို 'sfx' ဖိုင်တွဲထဲတွင် ရှာမတွေ့ပါ။")
+                        st.toast(f"⚠️ Sound Effect ဖိုင် မရှိပါ: '{sfx_tag_clean}.mp3' ကို 'sfx' ဖိုင်တွဲထဲတွင် ရှာမတွေ့ပါ။")
                 
                 try:
                     ffmpeg.output(vid_stream, aud_stream, v_out,
